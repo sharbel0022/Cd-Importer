@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent, type SyntheticEvent } from "react";
 import { Check, CheckCircle2, Download, LoaderCircle, Mic, ShieldCheck, Square, Trash2, X } from "lucide-react";
 import type { Bitrate } from "@/lib/types";
+import { musicRequest } from "@/lib/music-request";
 import { microphoneError, recordingExtension, selectRecordingMime } from "@/lib/recording-format";
 import { deleteRecording, listRecordings, MAX_RECORDINGS, saveRecording, type StoredRecording } from "@/lib/recordings-store";
 import type { ServiceStatus } from "./converter";
@@ -233,7 +234,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
       form.append("title", title.trim());
       form.append("bitrate", String(bitrate));
       form.append("rightsConfirmed", "true");
-      const response = await fetch("/api/convert", { method: "POST", body: form, signal: controller.signal });
+      const response = await musicRequest("/api/convert", { method: "POST", body: form, signal: controller.signal });
       if (!response.ok) throw new Error(await responseError(response, "Inspelningen kunde inte konverteras"));
       if (response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "audio/mpeg") throw new Error("Servern skickade inte en MP3-fil. Försök igen.");
       const blob = await response.blob();
@@ -306,7 +307,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
           {fallback && fallbackUrl && <div className="recording-preview"><strong>MP3 klar — kunde inte sparas i webbläsaren</strong><audio controls={phase === "idle"} onPlay={playPreview} preload="metadata" src={fallbackUrl} aria-label="Lyssna på färdig MP3" /><a className="button button-secondary" href={fallbackUrl} download={fallback.filename}><Download size={16} /> Ladda ner MP3</a></div>}
           <button type="submit" className="button button-primary convert-submit" disabled={!recording || !title.trim() || !confirmed || phase !== "idle" || status?.ffmpeg.available === false}>{phase === "converting" ? <><LoaderCircle size={18} className="spin" /> Skapar och sparar MP3…</> : <><Download size={18} /> Spara som MP3</>}</button>
           {phase === "converting" && <button type="button" className="button button-secondary" onClick={() => requestRef.current?.abort()}>Avbryt konvertering</button>}
-          <p className="form-footnote">{phase === "converting" ? "Ljudet konverteras med FFmpeg. Din inspelning finns kvar om konverteringen misslyckas." : "Din mikrofon stängs efter inspelningen. Ljudet skickas till appens server först när du sparar som MP3."}</p>
+          <p className="form-footnote">{phase === "converting" ? "Ljudet konverteras med FFmpeg. Första gången hämtas konverteringsverktyget. Din inspelning finns kvar vid fel." : status?.conversionLocation === "browser" ? "Din mikrofon stängs efter inspelningen. Ljudet konverteras och sparas i din webbläsare." : "Din mikrofon stängs efter inspelningen. Ljudet skickas till appens server först när du sparar som MP3."}</p>
         </form>
         <aside className="conversion-aside"><div className="aside-note"><ShieldCheck size={25} /><h3>Dina egna ljud.<br />{" "}Sparade hos dig.</h3><p>MP3-inspelningar lagras i den här webbläsaren och finns kvar när du öppnar appen igen på samma adress.</p><p className="muted">Ladda ner filer du vill behålla. Rensad webbplatsdata eller privat läge kan radera sparade inspelningar.</p></div><div className="aside-note"><Mic size={25} /><h3>Redo för mikrofonen?</h3><p>Välj Starta inspelning och ge webbläsaren tillåtelse. På mobilen krävs HTTPS, även när du öppnar appen från din dator.</p><p className="muted">Inspelningen använder mikrofonen. Max 20 sparade inspelningar och 100 MB tillsammans.</p></div></aside>
       </div>

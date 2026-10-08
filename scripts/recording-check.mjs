@@ -124,13 +124,16 @@ try {
         await expect(page.getByRole("button", { name: "Spara som MP3", exact: true })).toBeEnabled();
         console.log("OK: MediaRecorder-startfel bevarar föregående ljudfil, förhandslyssning och sparmöjlighet; ny mikrofon stoppas");
       }
-      const conversionResponse = page.waitForResponse(response => response.url().endsWith("/api/convert") && response.request().method() === "POST", { timeout: 60_000 });
+      const browserConversion = await page.evaluate(async () => (await (await fetch("/api/status")).json()).conversionLocation === "browser");
+      const conversionResponse = browserConversion ? null : page.waitForResponse(response => response.url().endsWith("/api/convert") && response.request().method() === "POST", { timeout: 60_000 });
       await page.getByRole("button", { name: "Spara som MP3", exact: true }).click();
-      const response = await conversionResponse;
-      assert.equal(response.status(), 200, response.ok() ? "" : await response.text());
-      assert.match(response.headers()["content-type"], /audio\/mpeg/);
+      if (conversionResponse) {
+        const response = await conversionResponse;
+        assert.equal(response.status(), 200, response.ok() ? "" : await response.text());
+        assert.match(response.headers()["content-type"], /audio\/mpeg/);
+      }
       const row = page.getByRole("article").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
-      await expect(row).toBeVisible({ timeout: 30_000 });
+      await expect(row).toBeVisible({ timeout: 150_000 });
       const downloadEvent = page.waitForEvent("download");
       await row.getByRole("link", { name: "Ladda ner MP3", exact: true }).click();
       const download = await downloadEvent;

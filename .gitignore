@@ -32,3 +32,6 @@ converted/
 *.zip
 playwright-report/
 test-results/
+public/ffmpeg/
+.wrangler/
+.sites-runtime/

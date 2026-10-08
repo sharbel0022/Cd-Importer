@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCircle2, ChevronDown, Disc3, Download, ExternalLink, FileAudio2, FolderDown, Globe2, Headphones, Info, LibraryBig, ListMusic, LoaderCircle, LockKeyhole, Mic, Music2, Search, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { trackQuery, trackRef, type MusicSource, type SearchResponse, type Track } from "@/lib/types";
+import { musicRequest } from "@/lib/music-request";
 import Converter, { type ServiceStatus } from "./converter";
 import Dialog from "./dialog";
 import Player, { type PlaySelection } from "./player";
@@ -192,7 +193,7 @@ export default function MusicApp() {
     downloadController.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 180_000);
     try {
-      const response = await fetch(`/api/download?${trackQuery(track)}&bitrate=192`, { signal: controller.signal });
+      const response = await musicRequest(`/api/download?${trackQuery(track)}&bitrate=192`, { signal: controller.signal });
       if (!response.ok) throw new Error(await responseError(response, "Spåret kunde inte laddas ner"));
       const blob = await response.blob();
       if (!blob.size) throw new Error("Källan returnerade en tom ljudfil.");
@@ -219,7 +220,7 @@ export default function MusicApp() {
     downloadController.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 600_000);
     try {
-      const response = await fetch("/api/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tracks: allowed.map(trackRef), bitrate: 192 }), signal: controller.signal });
+      const response = await musicRequest("/api/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tracks: allowed.map(trackRef), bitrate: 192 }), signal: controller.signal });
       if (!response.ok) {
         let message = `Listan kunde inte hämtas (${response.status}).`;
         try {

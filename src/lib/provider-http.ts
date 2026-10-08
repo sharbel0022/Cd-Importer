@@ -4,7 +4,7 @@ const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 12_000;
 
 export function providerUserAgent(): string {
-  const configured = process.env.MUSIC_USER_AGENT?.trim();
+  const configured = typeof process !== "undefined" ? process.env.MUSIC_USER_AGENT?.trim() : undefined;
   return configured && configured.length <= 240 && !/[\r\n]/.test(configured)
     ? configured
     : "Cd-Importer/1.0 (Music search; https://github.com/sharbel0022/Cd-Importer)";

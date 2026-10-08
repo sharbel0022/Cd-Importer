@@ -2,6 +2,37 @@
 
 En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler och spela in med mikrofonen.
 
+## Använd via Sites
+
+Site-adress: [TON på Sites](https://ton-cd-importer.asdasdsa213.chatgpt.site). Sidan är privat för ägaren och använder Sites inloggning. Ingen lokal Node-server behöver köras för att använda den publicerade versionen.
+
+Sites-versionen använder samma svenska gränssnitt, officiella källor och licenspolicy. Den kör sökning, färsk rättighetskontroll och ljudhämtning i en Cloudflare Worker. FFmpeg WebAssembly körs i webbläsaren för inspelningar, egna filer och källformat som licensen tillåter att konvertera. Egna ljud laddas inte upp till Sites. FFmpeg hämtas från samma Site första gången du konverterar; räkna med omkring 31 MB extra hämtning och längre bearbetning på telefoner. Verktyget är enkeltrådat och kräver inte SharedArrayBuffer.
+
+Sites-gränser: egna filer/inspelningar högst **25 MB**, externa ljudfiler högst **20 MB**, ZIP högst 10 spår och 100 MB totalt. Större filer kan bearbetas i Windows-versionen. Slutför en konvertering innan du startar en annan. Sparade inspelningar finns i webbläsarens IndexedDB för Site-adressen; inspelningar från localhost flyttas inte automatiskt till denna adress. Ladda ner filer du vill säkerhetskopiera.
+
+Sites-bygget ligger i samma `Cd-Importer`-repository, med hostingidentitet i `.openai/hosting.json`. Den lokala Next.js-versionen använder fortfarande native FFmpeg. Sites har ett separat byggmål som återanvänder React-komponenterna och de gemensamma licens- och källmodulerna.
+
+Testa Sites-versionen lokalt:
+
+```powershell
+npm.cmd ci
+npm.cmd run build:sites
+npm.cmd run dev:sites
+# Öppna http://127.0.0.1:3003
+```
+
+I en annan PowerShell-terminal i projektmappen:
+
+```powershell
+$env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3003"
+npm.cmd run test:ui
+npm.cmd run test:recording
+npm.cmd run test:sites
+Remove-Item Env:LIVE_TEST_ORIGIN
+```
+
+`test:sites` verifierar WebAssembly-konvertering av FLAC, M4A och OGG samt verklig Commons-nedladdning och ZIP med källa/licens. `.openai/hosting.json` innehåller ingen nyckel eller Git-token. Publicering sker via Sites-verktygens verifierade källcommit och byggarkiv.
+
 ## Starta på Windows med PowerShell
 
 Installera **Node.js 22.16 eller senare LTS**, Git och valfritt VS Code. FFmpeg för din plattform hämtas automatiskt av `ffmpeg-static` vid paketinstallationen. Ett separat FFmpeg kan användas via `FFMPEG_PATH`.

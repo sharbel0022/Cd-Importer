@@ -1,0 +1,18 @@
+TON uses FFmpeg WebAssembly for browser audio conversion.
+
+@ffmpeg/ffmpeg 0.12.15 - MIT
+@ffmpeg/core 0.12.10 (single-thread) - GPL-2.0-or-later
+
+The FFmpeg core is redistributed without modification. Its binary is split
+for transport and reassembled unchanged; the manifest contains its SHA-256.
+
+Upstream source and build instructions:
+https://github.com/ffmpegwasm/ffmpeg.wasm
+https://github.com/ffmpegwasm/ffmpeg.wasm/releases/tag/v0.12.10
+https://github.com/FFmpeg/FFmpeg
+
+FFmpeg licensing information:
+https://ffmpeg.org/legal.html
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+Third-party audio obtained with this app retains its own source license.

@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check, CheckCircle2, Disc3, Download, FileAudio2, FolderOpen, LoaderCircle, ShieldCheck, Upload, X } from "lucide-react";
 import type { Bitrate } from "@/lib/types";
+import { musicRequest } from "@/lib/music-request";
 import { readableBytes, responseError, responseFilename, saveBlob } from "./client-utils";
 
 export interface ServiceStatus {
+  conversionLocation?: "browser" | "server";
   ffmpeg: { available: boolean; message: string };
   limits: { uploadMb: number; batchTracks: number };
 }
@@ -71,7 +73,7 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
       data.append("rightsConfirmed", "true");
       if (artist.trim()) data.append("artist", artist.trim());
       if (title.trim()) data.append("title", title.trim());
-      const response = await fetch("/api/convert", { method: "POST", body: data, signal: controller.signal });
+      const response = await musicRequest("/api/convert", { method: "POST", body: data, signal: controller.signal });
       if (!response.ok) throw new Error(await responseError(response, "Filen kunde inte konverteras"));
       const blob = await response.blob();
       if (!blob.size) throw new Error("Konverteringen gav en tom fil. Försök med en annan ljudfil.");
@@ -115,7 +117,7 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
           {error && <div className="notice notice-error" role="alert">{error}</div>}
           {download && <div className="conversion-success" role="status"><CheckCircle2 size={22} /><div><strong>Din MP3 är klar</strong><p>{download.filename} · {readableBytes(download.size)}</p><a href={download.url} download={download.filename}>Hämta filen igen <Download size={13} /></a></div></div>}
           <button className="button button-primary convert-submit" disabled={!file || !confirmed || busy || status?.ffmpeg.available === false} type="submit">{busy ? <><LoaderCircle size={18} className="spin" /> Konverterar din fil…</> : <><Download size={18} /> Konvertera till MP3</>}</button>
-          <p className="form-footnote">{busy ? "Filen bearbetas. Stanna kvar på sidan tills din MP3 är klar." : "Filen konverteras på den lokala servern. Temporära filer raderas efter bearbetning."}</p>
+          <p className="form-footnote">{busy ? "Filen bearbetas. Första gången hämtas konverteringsverktyget. Stanna kvar tills din MP3 är klar." : status?.conversionLocation === "browser" ? "Filen konverteras i din webbläsare. Ditt ljud laddas inte upp till Sites." : "Filen konverteras på den lokala servern. Temporära filer raderas efter bearbetning."}</p>
         </form>
         <aside className="conversion-aside"><div className="aside-note"><ShieldCheck size={25} /><h3>En riktig MP3.<br />Hela vägen.</h3><p>Vi konverterar ljudet med FFmpeg. Resultatet blir en MP3 som fungerar i vanliga musikspelare.</p></div><div className="aside-note cd-note"><Disc3 size={25} /><h3>Musik från din CD?</h3><p>Exportera först ljudfiler från en CD som du har rätt att kopiera. Välj sedan filerna här, en i taget.</p><p className="muted">Webbläsaren kan inte läsa eller rippa en fysisk CD direkt.</p></div><div className="aside-note"><h3>Vilken kvalitet passar?</h3><p><strong>192 kbps</strong> ger en bra balans. <strong>320 kbps</strong> ger större filer med högre kvalitet.</p><p className="muted">En högre bithastighet återskapar inte detaljer som saknas i originalet.</p></div></aside>
       </div>
