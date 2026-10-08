@@ -7,6 +7,8 @@ const root = process.cwd();
 await mkdir("public/ffmpeg", { recursive: true });
 await copyFile("node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js", "public/ffmpeg/ffmpeg-core.js");
 await copyFile("sites/ffmpeg-notice.txt", "public/ffmpeg/NOTICE.txt");
+await copyFile("sites/COPYING.GPLv2.txt", "public/ffmpeg/COPYING.GPLv2.txt");
+await copyFile("sites/LICENSE.wrapper.txt", "public/ffmpeg/LICENSE.wrapper.txt");
 const wasm = await readFile("node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm");
 const chunkSize = 16 * 1024 * 1024;
 const parts = [];
