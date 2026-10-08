@@ -18,13 +18,13 @@ function wav() {
 try {
   await page.goto(origin, { waitUntil: "networkidle", timeout: 60_000 });
   assert.equal(await page.locator("html").getAttribute("lang"), "sv");
-  assert.ok((await page.locator("h1").textContent()).includes("Hitta ljud."));
+  assert.ok((await page.getByRole("heading", { level: 1 }).textContent()).includes("Hitta ljud."));
   await page.screenshot({ path: "test-results/desktop.png", fullPage: true });
   console.log("OK: svensk startsida, desktop");
 
   await page.getByRole("navigation", { name: "Huvudmeny" }).getByRole("button", { name: "Konvertera & CD" }).click();
   await page.locator('input[type="file"]').setInputFiles({ name: "egen.wav", mimeType: "audio/wav", buffer: wav() });
-  await page.getByText("Bäst kvalitet", { exact: true }).click();
+  await page.locator(".converter-page:not(.recording-page)").getByText("Bäst kvalitet", { exact: true }).click();
   assert.ok(await page.getByRole("radio", { name: /320 kbps/ }).isChecked());
   await page.getByLabel(/Artist/).fill("UI-test");
   await page.getByLabel(/Låttitel/).fill("Egen ljudfil");
@@ -53,11 +53,11 @@ try {
   await row.getByRole("button", { name: `Lägg till ${selected.title} i nedladdningslistan` }).click();
 
   await row.getByRole("button", { name: `Spela ${selected.title}` }).click();
-  await page.waitForFunction(() => { const audio=document.querySelector("audio"); return audio && !audio.paused && audio.currentTime>0; }, undefined, { timeout: 60_000 });
+  await page.waitForFunction(() => { const audio=document.querySelector(".music-player audio"); return audio && !audio.paused && audio.currentTime>0; }, undefined, { timeout: 60_000 });
   await page.getByRole("button", { name: "Pausa musiken", exact: true }).click();
-  assert.ok(await page.locator("audio").evaluate(audio=>audio.paused));
+  assert.ok(await page.locator(".music-player audio").evaluate(audio=>audio.paused));
   await page.getByRole("slider", { name: "Volym", exact: true }).press("ArrowLeft");
-  assert.ok(await page.locator("audio").evaluate(audio => audio.volume < 0.75));
+  assert.ok(await page.locator(".music-player audio").evaluate(audio => audio.volume < 0.75));
   console.log("OK: verkliga sökresultat, licensdialog, spela/pausa och volym");
 
   const mp3Download = page.waitForEvent("download", { timeout: 90_000 });

@@ -24,6 +24,9 @@ converted/
 *.m4a
 *.aac
 *.ogg
+*.oga
+*.opus
+*.webm
 *.aiff
 *.aif
 *.zip

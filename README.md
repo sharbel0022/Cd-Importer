@@ -1,6 +1,6 @@
 # TON · Music Downloader / Cd-Importer
 
-En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer och konvertera egna ljudfiler med FFmpeg.
+En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler och spela in med mikrofonen.
 
 ## Starta på Windows med PowerShell
 
@@ -40,6 +40,8 @@ ipconfig
 
 Öppna `http://<datorns lokala IPv4-adress>:3000` på samma Wi-Fi. Tillåt vid behov Node.js på privata nätverk i Windows-brandväggen. Det finns ingen användarinloggning: publicera inte denna lokala konverteringsserver direkt på internet.
 
+**Mikrofon på telefon:** inspelning kräver HTTPS när telefonen ansluter till datorn. En vanlig HTTP-adress i det lokala nätverket fungerar för appens övriga funktioner men får inte mikrofonåtkomst. På datorn fungerar `http://127.0.0.1:3000` och `http://localhost:3000`. Läs mer om [webbläsarens krav för mikrofonåtkomst](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
+
 ## Använd appen
 
 - **Sök musik:** skriv låt, artist eller båda. Välj Internet Archive, Wikimedia Commons eller båda. Filtret för tillåten MP3 visar endast filer som appen kan hämta enligt sin licenspolicy.
@@ -47,6 +49,7 @@ ipconfig
 - **Låtinformation:** visa format, längd om källan anger den, licens, erkännande, rättighetsvillkor och originalkälla. Saknat omslag får en neutral musikikon.
 - **Nedladdningslista:** lägg till eller ta bort låtar, se vilka som är tillåtna och exportera högst 10 per ZIP. ZIP innehåller MP3-filer, `LICENSER.json` med källor/villkor och `FEL.json` med misslyckade filer. Appen visar också misslyckade filer separat.
 - **Konvertera egna filer:** välj ljudfil, bekräfta att du har rätt att konvertera och välj 128, 192, 256 eller 320 kbps. WAV, FLAC och M4A stöds, liksom MP3, OGG, AAC och AIFF.
+- **Spela in ljud:** öppna fliken, välj **Starta inspelning** och tillåt mikrofonen. Välj **Stoppa inspelning**, lyssna, ange ett namn och välj 128, 192, 256 eller 320 kbps. Bekräfta dina rättigheter och välj **Spara som MP3**. FFmpeg skapar en riktig MP3 som visas under **Sparade inspelningar** med uppspelning, **Ladda ner MP3** och radering. Mikrofonen stängs när inspelningen stoppas. Högst 10 minuter och uppladdningsgränsen gäller per inspelning.
 - **CD-import:** exportera spåren från en CD du har rätt att kopiera med ditt vanliga CD-program, exempelvis som WAV, och konvertera filerna i appen. Webbläsaren kan inte läsa en fysisk ljud-CD eller `.cda`-genvägar direkt. Appen har ingen funktion som kringgår kopieringsskydd.
 - **Originalkälla:** länken finns alltid i informationen och visas vid hämtningsproblem. Du kan där läsa villkor och använda källans egna alternativ.
 
@@ -103,7 +106,8 @@ Starta om appen efter ändringar i `.env.local`. Statusen i konverteringsvyn vis
 - MP3-data verifieras med riktiga MPEG Layer III-ramar. Att byta filändelse räknas aldrig som konvertering. Icke-MP3 avkodas/kodas med FFmpeg när licensen tillåter.
 - FFmpeg får ingen nätverksåtkomst, tvingas till ljudfilens demuxer och startas med argumentlista utan shell. Storleksgränser gäller den verkliga strömmade uppladdningen.
 - Mutationer från en annan webbplats avvisas. Anropsgränser gäller per serverprocess: 30 sökningar, 120 ljudanrop, 20 hämtningar, 6 ZIP-exporter och 8 konverteringar per minut.
-- Kön sparas bara i den aktuella webbläsaren. Egna ljudfiler lagras inte permanent och lämnar inte din lokala server.
+- Kön sparas bara i den aktuella webbläsaren. Uppladdade originalfiler och serverns temporära konverteringsfiler raderas efter bearbetning. Mikrofonljudet skickas till appens server först när du väljer att spara som MP3.
+- Sparade MP3-inspelningar finns i webbläsarens IndexedDB på den aktuella adressen, högst 20 inspelningar och 100 MB totalt. De överlever omladdning men är ingen säkerhetskopia: privat läge, rensad webbplatsdata eller byte av webbläsare/adress kan göra dem otillgängliga. Ladda ner filer du vill behålla. Vid lagringsfel visas en direkt MP3-länk utan att filen påstås vara sparad.
 - Ingen databas eller extern nyckeltjänst behövs. `.env`, beroenden, byggen, ljudfiler och tempmappar ignoreras av Git.
 
 För en publik fleranvändartjänst behövs autentisering, separata användarkvoter, strömmande köhantering och distribuerade anropsgränser. Den här versionen är avsedd för lokal användning på Windows; Node.js och FFmpeg krävs för serverfunktionerna. En statisk export eller Edge-runtime kan inte köra konverteringen.
@@ -120,6 +124,9 @@ src/app/api/convert/     Begränsad uppladdning och FFmpeg
 src/app/api/status/      FFmpeg-status och konfigurerade gränser
 src/app/api/license/     Färsk licensinformation som separat JSON-fil
 src/components/          Sökvy, låtkort, information och spelare
+src/components/recorder.tsx Mikrofon, förhandslyssning och inspelningslista
+src/lib/recordings-store.ts Lokal MP3-lagring i IndexedDB
+src/lib/recording-format.ts Formatval och mikrofonfel
 src/lib/catalog.ts       Officiella källor och färsk metadata
 src/lib/licenses.ts      Licensklassificering och restriktioner
 src/lib/provider-http.ts Begränsad API-klient
@@ -130,6 +137,7 @@ src/lib/request.ts        Indata, kroppsstorlek och anropsgränser
 tests/                   Licens-, käll-, fil- och säkerhetstester
 scripts/live-check.ts    Verkligt API-/fil-/konverteringstest
 scripts/ui-check.mjs     Webbläsartest och skärmbilder på flera skärmbredder
+scripts/recording-check.mjs Inspelning, MP3 och lagring med simulerad mikrofon
 ```
 
 ## Verifiering
@@ -149,6 +157,15 @@ Ett separat webbläsartest kontrollerar verklig sökning, uppspelning, nedladdni
 ```powershell
 npx.cmd playwright install chromium
 npm.cmd run test:ui
+```
+
+Inspelningsflödet har ett separat test med Chromiums simulerade mikrofon; testet använder inte datorns fysiska mikrofon. Det spelar in, stoppar, konverterar med FFmpeg, avkodar MP3-filen, kontrollerar sparande efter omladdning och testar mikrofonfel på dator- och mobilbredd:
+
+```powershell
+# Appen ska vara igång på port 3000 i en annan terminal.
+$env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3000"
+npm.cmd run test:recording
+Remove-Item Env:LIVE_TEST_ORIGIN
 ```
 
 Beroenden och FFmpeg har egna licenser; se respektive paket och `node_modules/ffmpeg-static/LICENSE`. Nedladdad musiks licens följer inte automatiskt av projektets programkod.

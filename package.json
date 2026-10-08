@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:live": "node --env-file-if-exists=.env.local --import tsx scripts/live-check.ts",
-    "test:ui": "node scripts/ui-check.mjs"
+    "test:ui": "node scripts/ui-check.mjs",
+    "test:recording": "node --import tsx scripts/recording-check.mjs"
   },
   "dependencies": {
     "next": "16.4.0",

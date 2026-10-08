@@ -8,11 +8,12 @@ import { playbackTime } from "./client-utils";
 
 export interface PlaySelection { track: Track; playlist: Track[]; requestId: number }
 
-export default function Player({ selection, onSelect, onActiveChange, onPlayingChange }: {
+export default function Player({ selection, onSelect, onActiveChange, onPlayingChange, suspended = false }: {
   selection: PlaySelection | null;
   onSelect: (track: Track, playlist: Track[]) => void;
   onActiveChange: (key: string) => void;
   onPlayingChange: (playing: boolean) => void;
+  suspended?: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const currentTrack = useRef<Track | null>(null);
@@ -27,6 +28,7 @@ export default function Player({ selection, onSelect, onActiveChange, onPlayingC
   const [muted, setMuted] = useState(false);
 
   const play = () => {
+    if (suspended) return;
     const audio = audioRef.current;
     if (!audio || !currentTrack.current) return;
     const attempt = generation.current;
@@ -37,6 +39,10 @@ export default function Player({ selection, onSelect, onActiveChange, onPlayingC
       setError("Uppspelningen kunde inte starta. Försök igen eller lyssna hos originalkällan.");
     });
   };
+
+  useEffect(() => {
+    if (suspended) audioRef.current?.pause();
+  }, [suspended]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -66,6 +72,7 @@ export default function Player({ selection, onSelect, onActiveChange, onPlayingC
   }, [volume, muted]);
 
   const next = (direction: 1 | -1) => {
+    if (suspended) return;
     const playlist = selection?.playlist.filter((track) => track.playbackAllowed) ?? [];
     if (!active || !playlist.length) return;
     const index = playlist.findIndex((track) => track.key === active.key);
@@ -90,7 +97,7 @@ export default function Player({ selection, onSelect, onActiveChange, onPlayingC
       }} />
       <div className="player-track"><Artwork track={active} className="player-artwork" /><div><strong>{active?.title ?? "Lite tyst här än så länge"}</strong><span>{active?.artist ?? "Välj ett spår och tryck på spela"}</span>{error && active && <a className="player-error" href={active.sourceUrl} target="_blank" rel="noopener noreferrer" title={error}>Lyssna hos källan <ExternalLink size={11} /></a>}</div></div>
       <div className="player-center">
-        <div className="player-controls"><button className="icon-button" disabled={!active} onClick={() => next(-1)} aria-label="Föregående spår"><SkipBack size={18} fill="currentColor" /></button><button className="player-play" disabled={!active} onClick={() => audioRef.current?.paused ? play() : audioRef.current?.pause()} aria-label={playing ? "Pausa musiken" : "Spela musiken"}>{loading ? <LoaderCircle size={19} className="spin" /> : playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button className="icon-button" disabled={!active} onClick={() => next(1)} aria-label="Nästa spår"><SkipForward size={18} fill="currentColor" /></button></div>
+        <div className="player-controls"><button className="icon-button" disabled={!active || suspended} onClick={() => next(-1)} aria-label="Föregående spår"><SkipBack size={18} fill="currentColor" /></button><button className="player-play" disabled={!active || suspended} onClick={() => audioRef.current?.paused ? play() : audioRef.current?.pause()} aria-label={playing ? "Pausa musiken" : "Spela musiken"}>{loading ? <LoaderCircle size={19} className="spin" /> : playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button className="icon-button" disabled={!active || suspended} onClick={() => next(1)} aria-label="Nästa spår"><SkipForward size={18} fill="currentColor" /></button></div>
         <div className="player-timeline"><time>{playbackTime(time)}</time><input type="range" className="range-control" aria-label="Uppspelningstid" aria-valuetext={`${playbackTime(time)} av ${playbackTime(duration)}`} min={0} max={duration || 1} step={0.1} value={Math.min(time, duration || 1)} disabled={!active || !duration} style={{ "--range-fill": `${duration ? time / duration * 100 : 0}%` } as React.CSSProperties} onChange={(event) => { const position = Number(event.target.value); if (audioRef.current) { audioRef.current.currentTime = position; setTime(position); } }} /><time>{playbackTime(duration)}</time></div>
       </div>
       <div className="player-volume"><Headphones size={16} className="player-headphones" /><span className="volume-divider" /><button className="icon-button" onClick={() => setMuted((value) => !value)} aria-label={muted ? "Slå på ljudet" : "Stäng av ljudet"}>{muted || volume === 0 ? <VolumeX size={18} /> : volume < 0.5 ? <Volume1 size={18} /> : <Volume2 size={18} />}</button><input className="range-control" type="range" min={0} max={1} step={0.01} value={muted ? 0 : volume} aria-label="Volym" aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)} procent`} style={{ "--range-fill": `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties} onChange={(event) => { setVolume(Number(event.target.value)); setMuted(false); }} /></div>

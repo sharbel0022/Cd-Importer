@@ -1,15 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCircle2, ChevronDown, Disc3, Download, ExternalLink, FileAudio2, FolderDown, Globe2, Headphones, Info, LibraryBig, ListMusic, LoaderCircle, LockKeyhole, Music2, Search, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCircle2, ChevronDown, Disc3, Download, ExternalLink, FileAudio2, FolderDown, Globe2, Headphones, Info, LibraryBig, ListMusic, LoaderCircle, LockKeyhole, Mic, Music2, Search, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { trackQuery, trackRef, type MusicSource, type SearchResponse, type Track } from "@/lib/types";
 import Converter, { type ServiceStatus } from "./converter";
 import Dialog from "./dialog";
 import Player, { type PlaySelection } from "./player";
+import Recorder from "./recorder";
 import TrackCard, { Artwork } from "./track-card";
 import { durationLabel, isStoredTrack, readableBytes, responseError, responseFilename, safeFilename, saveBlob, sourceLabel } from "./client-utils";
 
-type View = "search" | "queue" | "convert";
+type View = "search" | "queue" | "convert" | "record";
 type SourceFilter = "all" | MusicSource;
 interface Failure { title: string; message: string; sourceUrl?: string }
 interface SavedDownload { filename: string; url: string; sourceUrl?: string; licenseEndpoint?: string }
@@ -26,7 +27,8 @@ function parseFailures(value: unknown): Failure[] {
 }
 
 export default function MusicApp() {
-  const [view, setView] = useState<View>("search");
+  const [view, setCurrentView] = useState<View>("search");
+  const [recordingBusy, setRecordingBusy] = useState(false);
   const [input, setInput] = useState("");
   const [term, setTerm] = useState("");
   const [source, setSource] = useState<SourceFilter>("all");
@@ -60,6 +62,14 @@ export default function MusicApp() {
   const savedUrl = useRef<string | null>(null);
   const downloadController = useRef<AbortController | null>(null);
   const maxQueue = status?.limits.batchTracks ?? 10;
+
+  const setView = useCallback((next: View) => {
+    if (recordingBusy && next !== "record") {
+      setToast("Avsluta inspelningen eller bearbetningen innan du byter sida.");
+      return;
+    }
+    setCurrentView(next);
+  }, [recordingBusy]);
 
   useEffect(() => {
     try {
@@ -102,7 +112,7 @@ export default function MusicApp() {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, []);
+  }, [setView]);
 
   const runSearch = useCallback(async (query: string, filter: SourceFilter, onlyLicensed: boolean, requestedPage: number, append: boolean) => {
     requestController.current?.abort();
@@ -256,6 +266,7 @@ export default function MusicApp() {
           <button className={`nav-item ${view === "search" ? "nav-active" : ""}`} onClick={() => setView("search")} aria-current={view === "search" ? "page" : undefined}><Search size={20} /><span>Upptäck musik</span></button>
           <button className={`nav-item ${view === "queue" ? "nav-active" : ""}`} onClick={() => setView("queue")} aria-current={view === "queue" ? "page" : undefined}><ListMusic size={20} /><span>Nedladdningslista</span><span className="nav-count">{queue.length}</span></button>
           <button className={`nav-item ${view === "convert" ? "nav-active" : ""}`} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera & CD</span></button>
+          <button className={`nav-item ${view === "record" ? "nav-active" : ""}`} onClick={() => setView("record")} aria-current={view === "record" ? "page" : undefined}><Mic size={20} /><span>Spela in ljud</span></button>
         </nav>
         <div className="sidebar-divider" />
         <div className="sidebar-label">ÖPPNA MUSIKKÄLLOR</div>
@@ -264,7 +275,7 @@ export default function MusicApp() {
         <div className="sidebar-bottom"><div className="sidebar-note"><span className="note-icon"><ShieldCheck size={19} /></span><strong>Musik med tillstånd.</strong><p>Hitta öppna inspelningar.<br />Spara med respekt för skaparen.</p><button onClick={() => setLicenseInfo(true)}>Så fungerar licenser <ArrowRight size={13} /></button></div><span className="sidebar-footer">BYGGT FÖR DIN MUSIK <AudioLines size={14} /></span></div>
       </aside>
       <div className="workspace">
-        <header className="topbar"><div className="topbar-location"><span>Bibliotek</span><span className="breadcrumb-slash">/</span><strong>{view === "search" ? "Upptäck" : view === "queue" ? "Din lista" : "Dina ljudfiler"}</strong></div><button className="topbar-license" onClick={() => setLicenseInfo(true)}><span className="small-dot" /> Verklig musik. Tydliga licenser.<ShieldCheck size={15} /></button><div className="mobile-brand">TON<span className="brand-dot" /></div></header>
+        <header className="topbar"><div className="topbar-location"><span>Bibliotek</span><span className="breadcrumb-slash">/</span><strong>{view === "search" ? "Upptäck" : view === "queue" ? "Din lista" : view === "record" ? "Spela in ljud" : "Dina ljudfiler"}</strong></div><button className="topbar-license" onClick={() => setLicenseInfo(true)}><span className="small-dot" /> Verklig musik. Tydliga licenser.<ShieldCheck size={15} /></button><div className="mobile-brand">TON<span className="brand-dot" /></div></header>
         <main id="main-content" className="main-content" tabIndex={-1}>
           {view === "search" && <>
             <section className="search-hero"><div className="hero-copy"><div className="section-eyebrow"><span className="small-dot" /> UPPTÄCK UTAN GRÄNSER</div><h1>Hitta ljud.<br /><span>Behåll musiken.</span></h1><p>Från okända pärlor till tidlösa inspelningar.<br className="desktop-break" /> Sök, lyssna och ladda ner med tillstånd.</p><div className="hero-tags"><span><Globe2 size={13} /> Öppna arkiv</span><span><Headphones size={13} /> Lyssna direkt</span><span><ArrowDownToLine size={13} /> Riktig MP3</span></div></div><div className="record-art" aria-hidden="true"><div className="record-topline"><span>TON / ÖPPNA ARKIV</span><AudioLines size={20} /></div><div className="vinyl-record"><div className="vinyl-label"><span>TON</span><i /><small>LJUD UTAN GRÄNSER</small></div></div><span className="record-bottomline">MER MUSIK. FLER MÖJLIGHETER.</span><span className="record-plus">+</span></div></section>
@@ -283,11 +294,17 @@ export default function MusicApp() {
           </>}
           {view === "queue" && <section className="queue-page"><div className="section-eyebrow"><span className="small-dot" /> SAMLAT FÖR DIG</div><div className="page-heading queue-heading"><div><h1>Din nästa<br /><span>musiksamling.</span></h1><p>Välj dina spår. Hämta dem tillsammans.<br className="desktop-break" /> Källor och licenser följer med i paketet.</p></div><div className="queue-total"><FolderDown size={28} strokeWidth={1.3} /><strong>{String(queue.length).padStart(2, "0")}</strong><span>VALDA SPÅR</span></div></div><div className="queue-toolbar"><div><span><span className="small-dot" /> {eligible} kan hämtas</span>{blockedCount > 0 && <span className="blocked-count"><LockKeyhole size={13} /> {blockedCount} saknar tillstånd</span>}</div><button className="button button-primary" onClick={() => void downloadBatch()} disabled={!eligible || batchBusy || !!downloadBusy}>{batchBusy ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}{batchBusy ? "Skapar ditt ZIP-paket…" : "Hämta som ZIP"}</button></div>{batchBusy && <p className="batch-status" role="status">Filerna hämtas och konverteras vid behov. Det kan ta en stund. Stanna kvar tills paketet är klart.</p>}{downloadError && <DownloadError value={downloadError} onClose={() => setDownloadError(undefined)} />}{savedDownload && <DownloadSuccess value={savedDownload} onClose={() => setSavedDownload(undefined)} />}{failures.length > 0 && <div className="failed-tracks notice notice-warning"><Info size={19} /><div><strong>Följande spår kunde inte hämtas</strong>{failures.map((failure, index) => <p key={`${failure.title}-${index}`}><b>{failure.title}</b> — {failure.message}{failure.sourceUrl && <a href={failure.sourceUrl} target="_blank" rel="noopener noreferrer"> Originalkälla <ExternalLink size={11} /></a>}</p>)}</div></div>}{queue.length ? <><div className="track-list">{queue.map((track, index) => <TrackCard key={track.key} track={track} index={index} active={activeKey === track.key} playing={playing} queued={true} queueMode busy={downloadBusy === track.key} onPlay={() => selectTrack(track, queue)} onInfo={() => setInfoTrack(track)} onToggle={() => toggleQueue(track)} onDownload={() => void downloadTrack(track)} />)}</div><div className="queue-footer"><p><ShieldCheck size={14} /> Upp till {maxQueue} spår. Vi kontrollerar varje fil och licens innan hämtning.</p><button className="text-button" disabled={batchBusy} onClick={() => { setQueue([]); setFailures([]); setToast("Din nedladdningslista har tömts."); }}><Trash2 size={14} /> Töm listan</button></div>{blockedCount > 0 && <div className="blocked-explanation"><LockKeyhole size={19} /><div><strong>Några spår saknar verifierade rättigheter.</strong><p>De följer inte med i ZIP-filen. Klicka på licensen för att se källans information och varför nedladdningen inte är tillgänglig.</p></div></div>}<div className="zip-note"><FolderDown size={20} /><p>ZIP-paketet innehåller riktiga MP3-filer, <strong>LICENSER.json</strong> med källa och attribution samt <strong>FEL.json</strong> om någon fil inte kunde hämtas.</p></div></> : <div className="empty-state queue-empty"><span className="empty-icon"><ListMusic size={36} strokeWidth={1.2} /></span><h2>En tom lista. Oändliga möjligheter.</h2><p>Tryck på plus bredvid ett spår i sökresultaten.<br />Dina val sparas i den här webbläsaren.</p><button className="button button-primary" onClick={() => { setView("search"); window.setTimeout(() => searchInput.current?.focus(), 0); }}>Hitta ditt första spår <ArrowRight size={16} /></button></div>}</section>}
           {view === "convert" && <Converter status={status} />}
+          <div hidden={view !== "record"}><Recorder status={status} onRecordingChange={setRecordingBusy} /></div>
           <div className="content-footer"><span>TON<span className="footer-dot">.</span> <span>En plats för öppet ljud.</span></span><button onClick={() => setLicenseInfo(true)}>Källor & licenser <ArrowRight size={12} /></button></div>
         </main>
       </div>
-      <nav className="mobile-navigation" aria-label="Mobilmeny"><button className={view === "search" ? "mobile-nav-active" : ""} onClick={() => setView("search")} aria-current={view === "search" ? "page" : undefined}><Search size={20} /><span>Upptäck</span></button><button className={view === "queue" ? "mobile-nav-active" : ""} onClick={() => setView("queue")} aria-current={view === "queue" ? "page" : undefined}><span className="mobile-queue-icon"><ListMusic size={20} />{queue.length > 0 && <i>{queue.length}</i>}</span><span>Din lista</span></button><button className={view === "convert" ? "mobile-nav-active" : ""} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera</span></button></nav>
-      <Player selection={selection} onSelect={selectTrack} onActiveChange={setActiveKey} onPlayingChange={setPlaying} />
+      <nav className="mobile-navigation" aria-label="Mobilmeny">
+        <button className={view === "search" ? "mobile-nav-active" : ""} onClick={() => setView("search")} aria-current={view === "search" ? "page" : undefined}><Search size={20} /><span>Upptäck</span></button>
+        <button className={view === "queue" ? "mobile-nav-active" : ""} onClick={() => setView("queue")} aria-current={view === "queue" ? "page" : undefined}><span className="mobile-queue-icon"><ListMusic size={20} />{queue.length > 0 && <i>{queue.length}</i>}</span><span>Din lista</span></button>
+        <button className={view === "convert" ? "mobile-nav-active" : ""} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera</span></button>
+        <button className={view === "record" ? "mobile-nav-active" : ""} onClick={() => setView("record")} aria-current={view === "record" ? "page" : undefined}><Mic size={20} /><span>Spela in ljud</span></button>
+      </nav>
+      <Player selection={selection} onSelect={selectTrack} onActiveChange={setActiveKey} onPlayingChange={setPlaying} suspended={recordingBusy} />
       {toast && <div className="toast" role="status"><CheckCircle2 size={18} /><span>{toast}</span><button className="icon-button" onClick={() => setToast(undefined)} aria-label="Stäng meddelandet"><X size={15} /></button></div>}
       {infoTrack && <TrackInfo track={infoTrack} onClose={() => setInfoTrack(null)} onDownload={() => void downloadTrack(infoTrack)} busy={downloadBusy === infoTrack.key} downloadError={downloadError?.sourceUrl === infoTrack.sourceUrl ? downloadError.message : undefined} savedDownload={savedDownload?.sourceUrl === infoTrack.sourceUrl ? savedDownload : undefined} />}
       {licenseInfo && <Dialog title="Musik med tydliga villkor" onClose={() => setLicenseInfo(false)}><div className="legal-intro"><ShieldCheck size={26} /><p>TON hjälper dig hitta ljud som originalkällan gör tillgängligt. Upphovsrätt och licensvillkor följer alltid med musiken.</p></div><div className="license-explanation"><h3><Check size={17} /> Verifierat nedladdningstillstånd</h3><p>En känd öppen licens eller en public domain-markering finns i källans metadata. Appen kontrollerar licensen och filens tillgänglighet igen när du hämtar den.</p><h3><LockKeyhole size={17} /> Saknad eller oklar licens</h3><p>Att en fil finns på internet ger inte automatiskt rätt att ladda ner den. När vi saknar tydligt stöd i licensen erbjuder appen ingen MP3-nedladdning.</p><h3><Info size={17} /> Följ licensen när du använder musiken</h3><p>Vissa licenser kräver att du anger skapare och källa, begränsar kommersiell användning eller kräver att bearbetningar delas med samma licens. Läs alltid villkoren för varje spår. Ingen nedladdning kringgår skyddade strömmar eller DRM.</p></div><div className="legal-sources"><a href="https://archive.org/about/terms.php" target="_blank" rel="noopener noreferrer">Internet Archives villkor <ExternalLink size={14} /></a><a href="https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia" target="_blank" rel="noopener noreferrer">Återanvända Wikimedia Commons <ExternalLink size={14} /></a></div><p className="dialog-footnote">Sökning hos dessa källor kräver ingen registrering eller API-nyckel. Originalkällans villkor gäller.</p></Dialog>}
