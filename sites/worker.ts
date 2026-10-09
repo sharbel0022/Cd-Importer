@@ -6,7 +6,7 @@ import { fetchAudio } from "./safe-fetch";
 declare const __SITE_HTML__: string;
 interface Env { ASSETS?: { fetch(request: Request): Promise<Response> } }
 const budgets = new Map<string, { count: number; reset: number }>();
-const HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin", "Permissions-Policy": "camera=(), microphone=(self), geolocation=()" };
+const HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin", "Permissions-Policy": "camera=(), microphone=(self), display-capture=(self), geolocation=()" };
 function guard(request: Request, action: string) {
   if (request.headers.get("sec-fetch-site") === "cross-site") throw new AppError("Öppna appen för att använda den här funktionen.", 403);
   const minute = Date.now(); const key = `${request.headers.get("cf-connecting-ip") || "local"}:${action}`;

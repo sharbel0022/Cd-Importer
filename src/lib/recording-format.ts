@@ -23,3 +23,13 @@ export function microphoneError(error: unknown): string {
   if (name === "SecurityError") return "Webbläsaren blockerar mikrofonen. Öppna appen via localhost eller HTTPS.";
   return "Inspelningen kunde inte startas. Kontrollera mikrofonen och försök igen.";
 }
+
+export function computerAudioError(error: unknown): string {
+  const name = typeof error === "object" && error !== null && "name" in error ? String(error.name) : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") return "Ljuddelningen avbröts eller nekades. Välj Starta inspelning och dela en flik eller skärm med ljud.";
+  if (name === "NotReadableError" || name === "TrackStartError") return "Datorljudet kunde inte öppnas. Försök dela en annan flik eller hela skärmen med ljud.";
+  if (name === "InvalidStateError") return "Starta ljuddelningen med knappen i ett aktivt webbläsarfönster.";
+  if (name === "NotFoundError") return "Ingen delningsbar skärm eller flik hittades. Prova Chrome eller Edge på datorn.";
+  if (name === "SecurityError") return "Webbläsaren blockerar ljuddelningen. Öppna appen via localhost eller HTTPS.";
+  return "Datorljudet kunde inte spelas in. Prova Chrome eller Edge på datorn och aktivera ljud i delningsrutan.";
+}

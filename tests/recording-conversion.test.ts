@@ -24,13 +24,14 @@ describe("browser microphone recording formats", () => {
     { extension: "webm", codec: "libopus", format: "webm", flags: [] },
     { extension: "m4a", codec: "aac", format: "mp4", flags: ["-movflags", "frag_keyframe+empty_moov"] },
     { extension: "ogg", codec: "libopus", format: "ogg", flags: [] },
+    { extension: "mp3", codec: "libmp3lame", format: "mp3", flags: ["-b:a", "320k"] },
   ])("converts $extension microphone audio to a genuinely decodable MP3", async ({ extension, codec, format, flags }) => {
     const recording = await runFFmpeg([
       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1.5",
       "-map", "0:a:0", "-c:a", codec, ...flags, "-f", format, "pipe:1",
     ]);
     expect(recording.length).toBeGreaterThan(1000);
-    expect(isRealMp3(recording)).toBe(false);
+    expect(isRealMp3(recording)).toBe(extension === "mp3");
     const mp3 = await convertToMp3(recording, 192, extension);
     expect(isRealMp3(mp3)).toBe(true);
     const decoded = await runFFmpeg([

@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type SyntheticEvent } from "react";
-import { Check, CheckCircle2, Download, LoaderCircle, Mic, ShieldCheck, Square, Trash2, X } from "lucide-react";
+import { Check, CheckCircle2, Download, LoaderCircle, Mic, MonitorSpeaker, ShieldCheck, Square, Trash2, X } from "lucide-react";
 import type { Bitrate } from "@/lib/types";
 import { musicRequest } from "@/lib/music-request";
-import { microphoneError, recordingExtension, selectRecordingMime } from "@/lib/recording-format";
+import { computerAudioError, microphoneError, recordingExtension, selectRecordingMime } from "@/lib/recording-format";
 import { deleteRecording, listRecordings, MAX_RECORDINGS, saveRecording, type StoredRecording } from "@/lib/recordings-store";
 import type { ServiceStatus } from "./converter";
 import { playbackTime, readableBytes, responseError, responseFilename } from "./client-utils";
 
 type Phase = "idle" | "permission" | "recording" | "stopping" | "converting";
+type CaptureMode = "microphone" | "computer";
 type Recording = { blob: Blob; duration: number };
 const MAX_SECONDS = 600;
 const qualities: { bitrate: Bitrate; name: string }[] = [
@@ -32,8 +33,9 @@ function pauseOtherAudio(current?: HTMLAudioElement) {
   document.querySelectorAll("audio").forEach((audio) => { if (audio !== current) audio.pause(); });
 }
 
-export default function Recorder({ status, onRecordingChange }: { status: ServiceStatus | null; onRecordingChange?: (active: boolean) => void }) {
+export default function Recorder({ status, onRecordingChange }: { status: ServiceStatus | null; onRecordingChange?: (active: boolean, suspendPlayback: boolean) => void }) {
   const [phase, setPhase] = useState<Phase>("idle");
+  const [mode, setMode] = useState<CaptureMode>("microphone");
   const phaseRef = useRef<Phase>("idle");
   const callbackRef = useRef(onRecordingChange);
   const aliveRef = useRef(false);
@@ -68,7 +70,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
   const changePhase = (next: Phase) => {
     phaseRef.current = next;
     setPhase(next);
-    callbackRef.current?.(next !== "idle");
+    callbackRef.current?.(next !== "idle", next !== "idle" && mode === "microphone");
   };
   const clearTimers = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -76,7 +78,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     timerRef.current = null;
     limitRef.current = null;
   };
-  const releaseMicrophone = () => {
+  const releaseCapture = () => {
     streamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
     streamRef.current = null;
   };
@@ -98,7 +100,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
         recorder.onerror = null;
         if (recorder.state !== "inactive") { try { recorder.stop(); } catch { /* Already stopped. */ } }
       }
-      releaseMicrophone();
+      releaseCapture();
       chunksRef.current = [];
     };
   }, []);
@@ -120,24 +122,38 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     if (notice) setMessage(notice);
     try { recorder.stop(); }
     catch { failedRef.current = true; setError("Inspelningen kunde inte avslutas. Försök igen."); changePhase("idle"); }
-    releaseMicrophone();
+    releaseCapture();
   };
 
   const startRecording = async () => {
     if (phaseRef.current !== "idle") return;
     setError(undefined);
     setMessage(undefined);
-    if (!window.isSecureContext) { setError("Mikrofonen kräver en säker anslutning. Öppna appen via localhost, 127.0.0.1 eller HTTPS."); return; }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") { setError("Din webbläsare stöder inte ljudinspelning. Prova en aktuell version av Chrome, Edge, Firefox eller Safari."); return; }
+    if (!window.isSecureContext) { setError("Ljudinspelning kräver en säker anslutning. Öppna appen via localhost, 127.0.0.1 eller HTTPS."); return; }
+    if (typeof MediaRecorder === "undefined") { setError("Din webbläsare stöder inte ljudinspelning. Prova en aktuell version av Chrome, Edge, Firefox eller Safari."); return; }
+    if (mode === "microphone" && !navigator.mediaDevices?.getUserMedia) { setError("Din webbläsare stöder inte mikrofoninspelning. Prova en aktuell webbläsare."); return; }
+    if (mode === "computer" && !navigator.mediaDevices?.getDisplayMedia) { setError("Datorljud kan inte delas i den här webbläsaren. Prova Chrome eller Edge på Windows. På mobilen kan du välja Mikrofon."); return; }
     const attempt = ++attemptRef.current;
-    pauseOtherAudio();
+    // Leave playback running when it may be the sound the user wants to capture.
+    if (mode === "microphone") pauseOtherAudio();
     changePhase("permission");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const displayOptions: DisplayMediaStreamOptions & { systemAudio: "include" } = { video: true, audio: true, systemAudio: "include" };
+      // Call directly from the click: screen sharing requires a user gesture.
+      const stream = await (mode === "computer" ? navigator.mediaDevices.getDisplayMedia(displayOptions) : navigator.mediaDevices.getUserMedia({ audio: true }));
       if (!aliveRef.current || attempt !== attemptRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       streamRef.current = stream;
+      const audioTracks = stream.getAudioTracks().filter((track) => track.readyState === "live");
+      if (!audioTracks.length) {
+        releaseCapture();
+        setError(mode === "computer" ? "Inget ljud delades. Välj en flik och markera Dela flikens ljud, eller hela skärmen och aktivera systemljud om alternativet finns. Ett vanligt fönster kan sakna ljuddelning." : "Mikrofonen skickar inget ljud. Välj en annan mikrofon och försök igen.");
+        changePhase("idle");
+        return;
+      }
+      // Keep the display stream alive to observe Stop sharing, but record audio only.
+      const audioStream = new MediaStream(audioTracks);
       const mime = typeof MediaRecorder.isTypeSupported === "function" ? selectRecordingMime((type) => MediaRecorder.isTypeSupported(type)) : undefined;
-      const recorder = mime ? new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      const recorder = mime ? new MediaRecorder(audioStream, { mimeType: mime, audioBitsPerSecond: 128_000 }) : new MediaRecorder(audioStream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       bytesRef.current = 0;
@@ -159,7 +175,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
       recorder.onstop = () => {
         if (!aliveRef.current || attempt !== attemptRef.current) return;
         clearTimers();
-        releaseMicrophone();
+        releaseCapture();
         recorderRef.current = null;
         // onstop follows the final dataavailable, so the final audio chunk is included.
         if (!failedRef.current) {
@@ -167,7 +183,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
             const actualMime = recorder.mimeType || chunksRef.current.find((part) => part.type)?.type || mime || "";
             recordingExtension(actualMime);
             const blob = new Blob(chunksRef.current, { type: actualMime });
-            if (!blob.size) throw new Error("Inspelningen innehåller inget ljud. Kontrollera mikrofonen och försök igen.");
+            if (!blob.size) throw new Error("Inspelningen innehåller inget ljud. Kontrollera ljudkällan och försök igen.");
             setRecording({ blob, duration: durationRef.current });
           } catch (cause) { setError(cause instanceof Error ? cause.message : "Ljudfilen kunde inte skapas."); }
         }
@@ -178,13 +194,11 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
         if (!aliveRef.current || attempt !== attemptRef.current) return;
         failedRef.current = true;
         chunksRef.current = [];
-        setError("Webbläsaren avbröt inspelningen. Kontrollera mikrofonen och spela in igen.");
+        setError("Webbläsaren avbröt inspelningen. Kontrollera ljudkällan och spela in igen.");
         stopRecording();
-        clearTimers();
-        releaseMicrophone();
-        changePhase("idle");
+        // The final stop event owns cleanup; don't allow a new capture to race it.
       };
-      stream.getAudioTracks().forEach((track) => { track.onended = () => stopRecording("Mikrofonen kopplades bort. Ljudet fram till avbrottet kan sparas."); });
+      stream.getTracks().forEach((track) => { track.onended = () => stopRecording(mode === "computer" ? "Ljuddelningen avslutades. Ljudet fram till avbrottet kan sparas." : "Mikrofonen kopplades bort. Ljudet fram till avbrottet kan sparas."); });
       startedRef.current = performance.now();
       recorder.start(1000);
       // Preserve any previous recording if opening or starting this capture fails.
@@ -203,14 +217,14 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     } catch (cause) {
       if (!aliveRef.current || attempt !== attemptRef.current) return;
       clearTimers();
-      releaseMicrophone();
+      releaseCapture();
       recorderRef.current = null;
-      setError(microphoneError(cause));
+      setError(mode === "computer" ? computerAudioError(cause) : microphoneError(cause));
       changePhase("idle");
     }
   };
 
-  const cancelPermission = () => { attemptRef.current += 1; changePhase("idle"); setMessage("Inspelningen avbröts. Ingen mikrofon kommer att användas när tillståndsfrågan stängs."); };
+  const cancelPermission = () => { attemptRef.current += 1; changePhase("idle"); setMessage("Inspelningen avbröts. Ljudkällan stängs även om du ger tillstånd senare. Stäng webbläsarens tillstånds- eller delningsruta."); };
 
   const playPreview = (event: SyntheticEvent<HTMLAudioElement>) => {
     if (phaseRef.current !== "idle") { event.currentTarget.pause(); return; }
@@ -280,19 +294,25 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
 
   return (
     <section className="converter-page recording-page">
-      <div className="section-eyebrow"><span className="small-dot" /> FRÅN MIKROFON TILL MP3.</div>
+      <div className="section-eyebrow"><span className="small-dot" /> FRÅN DITT LJUD TILL MP3.</div>
       <div className="page-heading"><div><h1>Spela in.<br /><span>Spara din ton.</span></h1><p>Fånga en idé, din röst eller ett eget ljud.<br className="desktop-break" /> Lyssna, spara och ladda ner som MP3.</p></div><div className="conversion-illustration" aria-hidden="true"><Mic size={48} strokeWidth={1} /><div>MP3<span>128–320 kbps</span></div></div></div>
       {status?.ffmpeg.available === false && <div className="notice notice-warning" role="status"><ShieldCheck size={20} /><div><strong>MP3-konvertering behöver FFmpeg</strong><p>Du kan spela in och lyssna. Installera FFmpeg enligt README för att spara som MP3.</p></div></div>}
       <div className="converter-layout">
         <form className="conversion-form panel" onSubmit={convertAndSave}>
           <div className="step-heading"><span>01</span><h2>Spela in ditt ljud</h2></div>
+          <fieldset className="capture-modes" disabled={phase !== "idle"}>
+            <legend>Välj vad du vill spela in</legend>
+            <label className={`capture-mode ${mode === "microphone" ? "capture-selected" : ""}`}><input type="radio" name="capture-mode" aria-label="Mikrofon" checked={mode === "microphone"} onChange={() => setMode("microphone")} /><Mic size={22} /><strong>Mikrofon</strong><span>Din röst och ljud omkring dig</span></label>
+            <label className={`capture-mode ${mode === "computer" ? "capture-selected" : ""}`}><input type="radio" name="capture-mode" aria-label="Datorljud" checked={mode === "computer"} onChange={() => setMode("computer")} /><MonitorSpeaker size={22} /><strong>Datorljud</strong><span>Ljud från en flik eller datorn</span></label>
+          </fieldset>
+          {mode === "computer" && <p className="capture-help">Välj en flik eller hela skärmen i delningsrutan och aktivera ljuddelning. Chrome eller Edge på Windows rekommenderas. Ljudstödet beror på vad du delar. Endast ljud sparas; ingen video spelas in.</p>}
           <div className={`recording-stage ${phase === "recording" ? "is-recording" : ""}`}>
-            <span className="recording-indicator" aria-hidden="true"><Mic size={30} /></span>
+            <span className="recording-indicator" aria-hidden="true">{mode === "computer" ? <MonitorSpeaker size={30} /> : <Mic size={30} />}</span>
             <div className="recording-clock" role="timer" aria-label="Inspelningstid">{playbackTime(elapsed)}</div>
-            <p>{phase === "recording" ? "Mikrofonen spelar in" : phase === "permission" ? "Tillåt mikrofonen i webbläsaren" : phase === "stopping" ? "Avslutar inspelningen…" : recording ? "Din inspelning är redo" : "Mikrofonen startar först när du väljer att spela in"}</p>
+            <p>{phase === "recording" ? mode === "computer" ? "Datorljudet spelas in" : "Mikrofonen spelar in" : phase === "permission" ? mode === "computer" ? "Välj vad du vill dela och aktivera ljud" : "Tillåt mikrofonen i webbläsaren" : phase === "stopping" ? "Avslutar inspelningen…" : recording ? "Din inspelning är redo" : mode === "computer" ? "Ljuddelningen startar först när du väljer att spela in" : "Mikrofonen startar först när du väljer att spela in"}</p>
             <div className="recording-controls">
               {phase === "recording" ? <button type="button" className="button button-primary" onClick={() => stopRecording()}><Square size={16} /> Stoppa inspelning</button>
-                : phase === "permission" ? <><button type="button" className="button button-secondary" disabled><LoaderCircle className="spin" size={16} /> Väntar på mikrofon…</button><button type="button" className="button button-secondary" onClick={cancelPermission}><X size={16} /> Avbryt</button></>
+                : phase === "permission" ? <><button type="button" className="button button-secondary" disabled><LoaderCircle className="spin" size={16} /> {mode === "computer" ? "Väntar på ljuddelning…" : "Väntar på mikrofon…"}</button><button type="button" className="button button-secondary" onClick={cancelPermission}><X size={16} /> Avbryt</button></>
                 : <button type="button" className="button button-primary" onClick={() => void startRecording()} disabled={phase !== "idle"}><Mic size={17} /> {recording ? "Ny inspelning" : "Starta inspelning"}</button>}
             </div>
             <small>Högst 10 minuter · Max {uploadMb} MB</small>
@@ -307,9 +327,9 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
           {fallback && fallbackUrl && <div className="recording-preview"><strong>MP3 klar — kunde inte sparas i webbläsaren</strong><audio controls={phase === "idle"} onPlay={playPreview} preload="metadata" src={fallbackUrl} aria-label="Lyssna på färdig MP3" /><a className="button button-secondary" href={fallbackUrl} download={fallback.filename}><Download size={16} /> Ladda ner MP3</a></div>}
           <button type="submit" className="button button-primary convert-submit" disabled={!recording || !title.trim() || !confirmed || phase !== "idle" || status?.ffmpeg.available === false}>{phase === "converting" ? <><LoaderCircle size={18} className="spin" /> Skapar och sparar MP3…</> : <><Download size={18} /> Spara som MP3</>}</button>
           {phase === "converting" && <button type="button" className="button button-secondary" onClick={() => requestRef.current?.abort()}>Avbryt konvertering</button>}
-          <p className="form-footnote">{phase === "converting" ? "Ljudet konverteras med FFmpeg. Första gången hämtas konverteringsverktyget. Din inspelning finns kvar vid fel." : status?.conversionLocation === "browser" ? "Din mikrofon stängs efter inspelningen. Ljudet konverteras och sparas i din webbläsare." : "Din mikrofon stängs efter inspelningen. Ljudet skickas till appens server först när du sparar som MP3."}</p>
+          <p className="form-footnote">{phase === "converting" ? "Ljudet konverteras med FFmpeg. Första gången hämtas konverteringsverktyget. Din inspelning finns kvar vid fel." : status?.conversionLocation === "browser" ? "Mikrofon och delning stängs efter inspelningen. Ljudet konverteras och sparas i din webbläsare." : "Mikrofon och delning stängs efter inspelningen. Ljudet skickas till appens server först när du sparar som MP3."}</p>
         </form>
-        <aside className="conversion-aside"><div className="aside-note"><ShieldCheck size={25} /><h3>Dina egna ljud.<br />{" "}Sparade hos dig.</h3><p>MP3-inspelningar lagras i den här webbläsaren och finns kvar när du öppnar appen igen på samma adress.</p><p className="muted">Ladda ner filer du vill behålla. Rensad webbplatsdata eller privat läge kan radera sparade inspelningar.</p></div><div className="aside-note"><Mic size={25} /><h3>Redo för mikrofonen?</h3><p>Välj Starta inspelning och ge webbläsaren tillåtelse. På mobilen krävs HTTPS, även när du öppnar appen från din dator.</p><p className="muted">Inspelningen använder mikrofonen. Max 20 sparade inspelningar och 100 MB tillsammans.</p></div></aside>
+        <aside className="conversion-aside"><div className="aside-note"><ShieldCheck size={25} /><h3>Dina egna ljud.<br />{" "}Sparade hos dig.</h3><p>MP3-inspelningar lagras i den här webbläsaren och finns kvar när du öppnar appen igen på samma adress.</p><p className="muted">Ladda ner filer du vill behålla. Rensad webbplatsdata eller privat läge kan radera sparade inspelningar.</p></div><div className="aside-note"><MonitorSpeaker size={25} /><h3>Två sätt att spela in</h3><p>Mikrofon fångar röst och bakgrundsljud. Datorljud fångar den flik eller skärm som du delar med ljud.</p><p>På mobilen använder du mikrofonen via HTTPS. Datorljud kräver stöd för skärm- och ljuddelning i webbläsaren.</p><p className="muted">Max 20 sparade inspelningar och 100 MB tillsammans.</p></div></aside>
       </div>
       <section className="recordings-panel panel" aria-labelledby="saved-recordings-heading">
         <div className="recordings-heading"><h2 id="saved-recordings-heading">Sparade inspelningar</h2><span>{saved.length} / {MAX_RECORDINGS}</span></div>

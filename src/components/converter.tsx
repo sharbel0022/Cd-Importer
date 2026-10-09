@@ -95,7 +95,7 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
   return (
     <section className="converter-page">
       <div className="section-eyebrow"><span className="small-dot" /> DITT LJUD. DITT FORMAT.</div>
-      <div className="page-heading"><div><h1>Ge dina filer<br /><span>en ny ton.</span></h1><p>Från WAV, FLAC och M4A till MP3.<br className="desktop-break" /> Din musik, redo att följa med.</p></div><div className="conversion-illustration" aria-hidden="true"><FileAudio2 size={48} strokeWidth={1} /><ArrowRight size={25} strokeWidth={1.5} /><div>MP3<span>128–320 kbps</span></div></div></div>
+      <div className="page-heading"><div><h1>Ge dina filer<br /><span>en ny ton.</span></h1><p>M4A, WAV, FLAC och andra ljudfiler till MP3.<br className="desktop-break" /> Du kan också göra om en MP3 med vald kvalitet.</p></div><div className="conversion-illustration" aria-hidden="true"><FileAudio2 size={48} strokeWidth={1} /><ArrowRight size={25} strokeWidth={1.5} /><div>MP3<span>128–320 kbps</span></div></div></div>
       {status && !status.ffmpeg.available && <div className="notice notice-warning" role="status"><InfoIcon /><div><strong>Konvertering är inte tillgänglig just nu</strong><p>Servern behöver FFmpeg för att skapa MP3-filer. Följ installationen i projektets README och starta om appen.</p></div></div>}
       <div className="converter-layout">
         <form className="conversion-form panel" onSubmit={convert}>

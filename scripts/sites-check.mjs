@@ -17,14 +17,16 @@ const browser = await chromium.launch({ headless: true }); const page = await br
 try {
   await page.goto(origin, { waitUntil: "networkidle" });
   await page.getByRole("navigation", { name: "Huvudmeny" }).getByRole("button", { name: "Konvertera & CD" }).click();
-  for (const [extension, format, codec, extra] of [["flac", "flac", "flac", []], ["m4a", "mp4", "aac", ["-movflags", "frag_keyframe+empty_moov"]], ["ogg", "ogg", "libopus", []]]) {
+  for (const [extension, format, codec, extra] of [["flac", "flac", "flac", []], ["m4a", "mp4", "aac", ["-movflags", "frag_keyframe+empty_moov"]], ["mp3", "mp3", "libmp3lame", ["-b:a", "320k"]], ["ogg", "ogg", "libopus", []]]) {
     const file = await audio(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", codec, ...extra, "-f", format, "pipe:1"]);
     await page.locator('input[type="file"]').setInputFiles({ name: `egen.${extension}`, mimeType: "audio/" + format, buffer: file });
     await page.getByLabel(/Artist/).fill("Test"); await page.getByLabel(/Låttitel/).fill(extension.toUpperCase());
     await page.getByRole("radio", { name: /128 kbps/ }).check({ force: true });
     await page.getByLabel("Jag äger filen eller har uttryckligt tillstånd att konvertera den.").check();
     const next = page.waitForEvent("download", { timeout: 150_000 }); await page.getByRole("button", { name: "Konvertera till MP3", exact: true }).click();
-    const download = await next; assert.equal(download.suggestedFilename(), `Test - ${extension.toUpperCase()}.mp3`); await decode(await readFile(await download.path()));
+    const download = await next; assert.equal(download.suggestedFilename(), `Test - ${extension.toUpperCase()}.mp3`);
+    const output = await readFile(await download.path()); await decode(output);
+    if (extension === "mp3") assert.ok(output.length < file.length, "320 kbps MP3 input must really be re-encoded at selected 128 kbps quality");
     console.log(`OK: ${extension.toUpperCase()} → FFmpeg WASM → avkodningsbar MP3`);
   }
   await page.getByRole("navigation", { name: "Huvudmeny" }).getByRole("button", { name: "Upptäck musik" }).click();

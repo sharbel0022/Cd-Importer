@@ -321,6 +321,18 @@ h1, h2, h3, h4, p { margin: 0; }
 .conversion-success p { font-size: 10px; margin-top: 3px; color: #a8c78e; overflow-wrap: anywhere; }
 .conversion-success a { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; color: #cdebad; font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
 .recording-stage { display: flex; flex-direction: column; align-items: center; text-align: center; background: var(--background); border: 1px solid var(--line); border-radius: 10px; padding: 27px 18px 20px; margin-bottom: 24px; }
+.capture-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; border: 0; padding: 0; margin: 0 0 20px; }
+.capture-modes legend { color: var(--text); font-size: 14px; margin-bottom: 12px; }
+.capture-mode { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 9px; padding: 18px; cursor: pointer; }
+.capture-mode input { position: absolute; right: 15px; top: 18px; accent-color: var(--green); width: 16px; height: 16px; }
+.capture-mode strong { color: var(--text); font-size: 16px; font-weight: 500; }
+.capture-mode > span { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.capture-mode > svg { color: var(--green); }
+.capture-selected { background: #26361c; border-color: #6e904f; }
+.capture-modes:disabled .capture-mode { cursor: default; opacity: .65; }
+.capture-mode:focus-within { outline: 2px solid var(--green); outline-offset: 3px; }
+.capture-help { color: var(--muted); font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
+@media (max-width: 420px) { .capture-modes { grid-template-columns: 1fr; } }
 .recording-indicator { display: grid; place-items: center; width: 68px; height: 68px; border: 1px solid #5b7442; border-radius: 50%; background: #24351b; color: var(--green); margin-bottom: 13px; }
 .recording-clock { font-family: Consolas, monospace; font-size: 38px; letter-spacing: -.05em; font-variant-numeric: tabular-nums; color: var(--text); }
 .recording-stage > p { font-size: 11px; color: var(--muted); margin: 5px 0 20px; max-width: 290px; }

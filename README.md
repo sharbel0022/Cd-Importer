@@ -1,10 +1,10 @@
 # TON · Music Downloader / Cd-Importer
 
-En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler och spela in med mikrofonen.
+En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler och spela in mikrofon- eller datorljud.
 
 ## Använd via Sites
 
-Site-adress: [TON på Sites](https://ton-cd-importer.asdasdsa213.chatgpt.site). Sidan är privat för ägaren och använder Sites inloggning. Ingen lokal Node-server behöver köras för att använda den publicerade versionen.
+Site-adress: [TON på Sites](https://ton-cd-importer.asdasdsa213.chatgpt.site). Åtkomst styrs av delningsinställningarna i Sites. Ingen lokal Node-server behöver köras för att använda den publicerade versionen.
 
 Sites-versionen använder samma svenska gränssnitt, officiella källor och licenspolicy. Den kör sökning, färsk rättighetskontroll och ljudhämtning i en Cloudflare Worker. FFmpeg WebAssembly körs i webbläsaren för inspelningar, egna filer och källformat som licensen tillåter att konvertera. Egna ljud laddas inte upp till Sites. FFmpeg hämtas från samma Site första gången du konverterar; räkna med omkring 31 MB extra hämtning och längre bearbetning på telefoner. Verktyget är enkeltrådat och kräver inte SharedArrayBuffer.
 
@@ -27,11 +27,12 @@ I en annan PowerShell-terminal i projektmappen:
 $env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3003"
 npm.cmd run test:ui
 npm.cmd run test:recording
+npm.cmd run test:computer-recording
 npm.cmd run test:sites
 Remove-Item Env:LIVE_TEST_ORIGIN
 ```
 
-`test:sites` verifierar WebAssembly-konvertering av FLAC, M4A och OGG samt verklig Commons-nedladdning och ZIP med källa/licens. `.openai/hosting.json` innehåller ingen nyckel eller Git-token. Publicering sker via Sites-verktygens verifierade källcommit och byggarkiv.
+`test:sites` verifierar WebAssembly-konvertering av FLAC, M4A, MP3 och OGG samt verklig Commons-nedladdning och ZIP med källa/licens. `test:computer-recording` använder syntetisk skärm/ljud och testar ljud utan video, sparad MP3, avbruten delning, saknat ljud och städning. Testet kommer aldrig åt datorns riktiga skärm eller mikrofon. `.openai/hosting.json` innehåller ingen nyckel eller Git-token. Publicering sker via Sites-verktygens verifierade källcommit och byggarkiv.
 
 ## Starta på Windows med PowerShell
 
@@ -79,8 +80,9 @@ ipconfig
 - **Lyssna:** öppna en licensierad låt i spelaren. Den har play/pause, tidslinje, tider, volym, föregående/nästa och automatisk fortsättning. Webbläsaren avgör vilka ursprungsformat den kan spela; MP3-konverteringen fungerar oberoende av detta.
 - **Låtinformation:** visa format, längd om källan anger den, licens, erkännande, rättighetsvillkor och originalkälla. Saknat omslag får en neutral musikikon.
 - **Nedladdningslista:** lägg till eller ta bort låtar, se vilka som är tillåtna och exportera högst 10 per ZIP. ZIP innehåller MP3-filer, `LICENSER.json` med källor/villkor och `FEL.json` med misslyckade filer. Appen visar också misslyckade filer separat.
-- **Konvertera egna filer:** välj ljudfil, bekräfta att du har rätt att konvertera och välj 128, 192, 256 eller 320 kbps. WAV, FLAC och M4A stöds, liksom MP3, OGG, AAC och AIFF.
-- **Spela in ljud:** öppna fliken, välj **Starta inspelning** och tillåt mikrofonen. Välj **Stoppa inspelning**, lyssna, ange ett namn och välj 128, 192, 256 eller 320 kbps. Bekräfta dina rättigheter och välj **Spara som MP3**. FFmpeg skapar en riktig MP3 som visas under **Sparade inspelningar** med uppspelning, **Ladda ner MP3** och radering. Mikrofonen stängs när inspelningen stoppas. Högst 10 minuter och uppladdningsgränsen gäller per inspelning.
+- **Konvertera egna filer:** välj ljudfil, bekräfta att du har rätt att konvertera och välj 128, 192, 256 eller 320 kbps. M4A konverteras till riktig MP3. En befintlig MP3 kodas också om med vald kvalitet; filändelsen byts inte bara ut. WAV, FLAC, OGG, AAC och AIFF stöds också. Högre kvalitet återskapar inte information som saknas i originalet.
+- **Spela in ljud:** välj **Mikrofon** för röst och bakgrundsljud eller **Datorljud** för ljud från en delad flik/skärm. Välj **Starta inspelning** och ge tillstånd. I datorläget väljer du en flik med **Dela flikens ljud**, eller hela skärmen med systemljud om alternativet finns. Chrome/Edge på Windows rekommenderas; ett vanligt programfönster kan sakna ljuddelning. Ingen video sparas och datorläget öppnar inte mikrofonen. Saknas ljuddelning visas ett fel. Mobilwebbläsare kan sakna datorläget; mikrofon och filkonvertering fungerar där med HTTPS. Läs [webbläsarens dokumentation om ljud- och skärmdelning](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia).
+- **Spara inspelningen:** välj **Stoppa inspelning**, lyssna, ange ett namn och välj 128, 192, 256 eller 320 kbps. Bekräfta dina rättigheter och välj **Spara som MP3**. FFmpeg skapar en riktig MP3 under **Sparade inspelningar** med uppspelning, **Ladda ner MP3** och radering. Alla mikrofon-/delningsspår stängs efter inspelning, fel eller stängd vy. Webbläsarens **Sluta dela** avslutar också inspelningen och behåller ljudet fram till avbrottet. Högst 10 minuter och uppladdningsgränsen gäller per inspelning. Öppna Site-adressen direkt om en inbäddad webbläsare blockerar skärmdelning.
 - **CD-import:** exportera spåren från en CD du har rätt att kopiera med ditt vanliga CD-program, exempelvis som WAV, och konvertera filerna i appen. Webbläsaren kan inte läsa en fysisk ljud-CD eller `.cda`-genvägar direkt. Appen har ingen funktion som kringgår kopieringsskydd.
 - **Originalkälla:** länken finns alltid i informationen och visas vid hämtningsproblem. Du kan där läsa villkor och använda källans egna alternativ.
 
@@ -155,9 +157,9 @@ src/app/api/convert/     Begränsad uppladdning och FFmpeg
 src/app/api/status/      FFmpeg-status och konfigurerade gränser
 src/app/api/license/     Färsk licensinformation som separat JSON-fil
 src/components/          Sökvy, låtkort, information och spelare
-src/components/recorder.tsx Mikrofon, förhandslyssning och inspelningslista
+src/components/recorder.tsx Mikrofon/datorljud, förhandslyssning och inspelningslista
 src/lib/recordings-store.ts Lokal MP3-lagring i IndexedDB
-src/lib/recording-format.ts Formatval och mikrofonfel
+src/lib/recording-format.ts Formatval och inspelningsfel
 src/lib/catalog.ts       Officiella källor och färsk metadata
 src/lib/licenses.ts      Licensklassificering och restriktioner
 src/lib/provider-http.ts Begränsad API-klient
@@ -196,6 +198,7 @@ Inspelningsflödet har ett separat test med Chromiums simulerade mikrofon; teste
 # Appen ska vara igång på port 3000 i en annan terminal.
 $env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3000"
 npm.cmd run test:recording
+npm.cmd run test:computer-recording
 Remove-Item Env:LIVE_TEST_ORIGIN
 ```
 
