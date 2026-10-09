@@ -107,6 +107,15 @@ describe("own-file upload API", () => {
     const response = await convert(request);
     expect(response.status).toBe(200); expect(response.headers.get("Content-Type")).toBe("audio/mpeg");
     expect(response.headers.get("Content-Disposition")).toContain("Egen%20l%C3%A5t.mp3");
-    expect(mocks.convertToMp3).toHaveBeenCalledWith(Buffer.from("RIFF....WAVE"), 256, "wav", request.signal);
+    expect(mocks.convertToMp3).toHaveBeenCalledWith(Buffer.from("RIFF....WAVE"), 256, "wav", request.signal, []);
+  });
+  it("forwards normalized cuts and rejects malformed cuts before FFmpeg", async () => {
+    const form = await uploadRequest().formData(); form.set("cuts", '[{"start":2,"end":4},{"start":1,"end":3}]');
+    const request = new Request("http://localhost/api/convert", { method: "POST", body: form });
+    expect((await convert(request)).status).toBe(200);
+    expect(mocks.convertToMp3).toHaveBeenLastCalledWith(Buffer.from("RIFF....WAVE"), 256, "wav", request.signal, [{ start: 1, end: 4 }]);
+    mocks.convertToMp3.mockClear(); form.set("cuts", '[{"start":"0;amovie=http://localhost","end":1}]');
+    expect((await convert(new Request("http://localhost/api/convert", { method: "POST", body: form }))).status).toBe(400);
+    expect(mocks.convertToMp3).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import path from "node:path";
 import bundledFFmpeg from "ffmpeg-static";
 import { AppError } from "./errors";
 import type { Bitrate } from "./types";
+import { audioEditArguments, type AudioCut } from "./audio-edits";
 
 let activeConversions = 0;
 const MAX_CONVERSIONS = 2;
@@ -54,7 +55,7 @@ export async function getFFmpegStatus(): Promise<{ available: boolean; path?: st
 
 /** Real audio-only transcoding. The input demuxer is forced so playlists cannot
  * reference local files, and FFmpeg is never allowed to make network requests. */
-export async function convertToMp3(input: Buffer, bitrate: Bitrate, extension: string, signal?: AbortSignal): Promise<Buffer> {
+export async function convertToMp3(input: Buffer, bitrate: Bitrate, extension: string, signal?: AbortSignal, cuts: AudioCut[] = []): Promise<Buffer> {
   if (signal?.aborted) throw new AppError("Konverteringen avbröts.", 400);
   extension = extension.toLowerCase();
   if (!SUPPORTED_UPLOAD_EXTENSIONS.has(extension)) throw new AppError("Ljudformatet stöds inte.", 415);
@@ -70,7 +71,7 @@ export async function convertToMp3(input: Buffer, bitrate: Bitrate, extension: s
     await writeFile(inputPath, input, { flag: "wx" });
     await runFFmpeg([
       "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
-      "-f", inputFormat[extension], "-i", inputPath, "-map", "0:a:0", "-vn", "-sn", "-dn",
+      "-f", inputFormat[extension], "-i", inputPath, ...audioEditArguments(cuts), "-vn", "-sn", "-dn",
       "-map_metadata", "-1", "-map_metadata:s:a", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`,
       "-fs", String(MAX_CONVERSION_BYTES), "-f", "mp3", outputPath,
     ], 120_000, signal);

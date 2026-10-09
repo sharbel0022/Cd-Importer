@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, Check, CheckCircle2, Disc3, Download, FileAudio2, FolderOpen, LoaderCircle, ShieldCheck, Upload, X } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, Disc3, Download, FileAudio2, FolderOpen, LoaderCircle, Scissors, ShieldCheck, Upload, X } from "lucide-react";
 import type { Bitrate } from "@/lib/types";
 import { musicRequest } from "@/lib/music-request";
 import { readableBytes, responseError, responseFilename, saveBlob } from "./client-utils";
+import AudioEditor, { type EditableAudio } from "./audio-editor";
 
 export interface ServiceStatus {
   conversionLocation?: "browser" | "server";
@@ -31,6 +32,7 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string>();
   const [download, setDownload] = useState<{ url: string; filename: string; size: number }>();
+  const [editing, setEditing] = useState<EditableAudio | null>(null);
   const uploadMb = status?.limits.uploadMb ?? 100;
 
   useEffect(() => () => {
@@ -110,6 +112,7 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
             </label>
             {file && !busy && <button type="button" className="icon-button remove-file" aria-label="Ta bort vald fil" onClick={() => { setFile(null); setDownload(undefined); if (inputRef.current) inputRef.current.value = ""; }}><X size={17} /></button>}
           </div>
+          {file && <button type="button" className="button button-secondary" disabled={busy || status?.ffmpeg.available === false} onClick={() => setEditing({ file, title: title.trim() || file.name.replace(/\.[^.]+$/, ""), bitrate })}><Scissors size={17} /> Redigera ljud</button>}
           <div className="step-heading"><span>02</span><h2>Välj MP3-kvalitet</h2></div>
           <div className="quality-options" role="radiogroup" aria-label="MP3-kvalitet">{qualities.map((quality) => <label key={quality.bitrate} className={`quality-option ${bitrate === quality.bitrate ? "quality-selected" : ""}`}><input className="sr-only" type="radio" name="mp3-bitrate" value={quality.bitrate} checked={bitrate === quality.bitrate} onChange={() => setBitrate(quality.bitrate)} disabled={busy} aria-label={`${quality.bitrate} kbps, ${quality.name}`} /><strong>{quality.bitrate}<span> kbps</span></strong><small>{quality.name}</small>{bitrate === quality.bitrate && <Check size={13} />}</label>)}</div>
           <div className="file-details"><label>Artist <span>(valfritt)</span><input value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Artistens namn" maxLength={150} disabled={busy} /></label><label>Låttitel <span>(valfritt)</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Låtens namn" maxLength={150} disabled={busy} /></label></div>
@@ -121,6 +124,12 @@ export default function Converter({ status }: { status: ServiceStatus | null }) 
         </form>
         <aside className="conversion-aside"><div className="aside-note"><ShieldCheck size={25} /><h3>En riktig MP3.<br />Hela vägen.</h3><p>Vi konverterar ljudet med FFmpeg. Resultatet blir en MP3 som fungerar i vanliga musikspelare.</p></div><div className="aside-note cd-note"><Disc3 size={25} /><h3>Musik från din CD?</h3><p>Exportera först ljudfiler från en CD som du har rätt att kopiera. Välj sedan filerna här, en i taget.</p><p className="muted">Webbläsaren kan inte läsa eller rippa en fysisk CD direkt.</p></div><div className="aside-note"><h3>Vilken kvalitet passar?</h3><p><strong>192 kbps</strong> ger en bra balans. <strong>320 kbps</strong> ger större filer med högre kvalitet.</p><p className="muted">En högre bithastighet återskapar inte detaljer som saknas i originalet.</p></div></aside>
       </div>
+      {editing && <AudioEditor source={editing} onClose={() => setEditing(null)} onSave={audio => {
+        if (savedUrlRef.current) URL.revokeObjectURL(savedUrlRef.current);
+        const url = URL.createObjectURL(audio.file); savedUrlRef.current = url;
+        setDownload({ url, filename: audio.file.name, size: audio.file.size });
+        return "Din redigerade MP3 är klar för nedladdning. Originalfilen finns kvar.";
+      }} />}
     </section>
   );
 }

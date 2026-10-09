@@ -1,6 +1,6 @@
 # TON · Music Downloader / Cd-Importer
 
-En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler och spela in mikrofon- eller datorljud.
+En svensk, responsiv musikapp med Next.js App Router, TypeScript, Tailwind CSS och Node.js. Sök verkliga ljudfiler från officiella musikkällor, lyssna när en stödd licens finns, hämta riktiga MP3-filer, konvertera egna ljudfiler, spela in mikrofon- eller datorljud och klipp bort oönskade delar.
 
 ## Använd via Sites
 
@@ -29,11 +29,25 @@ npm.cmd run test:ui
 npm.cmd run test:recording
 npm.cmd run test:computer-recording
 npm.cmd run test:audio-level
+npm.cmd run test:audio-edit
 npm.cmd run test:sites
 Remove-Item Env:LIVE_TEST_ORIGIN
 ```
 
 `test:sites` verifierar WebAssembly-konvertering av FLAC, M4A, MP3 och OGG samt verklig Commons-nedladdning och ZIP med källa/licens. `test:computer-recording` använder syntetisk skärm/ljud och testar ljud utan video, sparad MP3, avbruten delning, saknat ljud och städning. Testet kommer aldrig åt datorns riktiga skärm eller mikrofon. `.openai/hosting.json` innehåller ingen nyckel eller Git-token. Publicering sker via Sites-verktygens verifierade källcommit och byggarkiv.
+
+## Redigera egna ljud
+
+Välj **Redigera ljud** efter en inspelning eller efter att du valt en fil under Konvertera & CD. Redan sparade MP3-inspelningar har en **Redigera**-knapp.
+
+1. Lyssna och välj start/slut med reglagen, sekunderfälten eller knapparna som använder spelarens position.
+2. Välj **Ta bort markerad del**. Upprepa för fler delar (högst 32 markeringar). **Ångra** eller återställ en del vid behov.
+3. Välj namn/kvalitet, bekräfta att du har rätt att redigera ljudet och välj **Spara redigerad kopia**.
+4. Lyssna på kopian och välj **Ladda ner redigerad MP3**. Originalet behålls alltid. Redigerade inspelningar sparas som separata kopior i webbläsarens inspelningslista; redigerade uppladdningar blir tillgängliga för nedladdning utan att originalfilen ändras.
+
+Förhandslyssning hoppar ungefär över markerade delar; den färdiga MP3-filen klipps med FFmpeg `atrim`/`concat`. Inga volymfilter, kanaländringar eller automatiska toningar läggs på. Varje ny MP3-kodning är förlustkomprimering; spara gärna ett original för framtida redigering. En klippgräns mitt i en ljudvåg kan höras som ett klick. Hela filen kan inte tas bort. Vid konverterings- eller lagringsfel finns originalet kvar, och en färdig kopia kan laddas ner även när lokal lagring är full.
+
+Samma storleks- och tidsgränser som vanlig konvertering gäller. Klipptider valideras på både lokalservern och i Sites-versionen; användaren kan inte skicka godtyckliga FFmpeg-filter eller externa URL:er. Redigering gäller egna eller uttryckligen tillåtna ljudfiler.
 
 ## Starta på Windows med PowerShell
 
@@ -160,6 +174,8 @@ src/app/api/status/      FFmpeg-status och konfigurerade gränser
 src/app/api/license/     Färsk licensinformation som separat JSON-fil
 src/components/          Sökvy, låtkort, information och spelare
 src/components/recorder.tsx Mikrofon/datorljud, förhandslyssning och inspelningslista
+src/components/audio-editor.tsx Klippmarkeringar, ångra, förhandslyssning och MP3-kopia
+src/lib/audio-edits.ts     Validerade klipptider och gemensamma FFmpeg-filter
 src/lib/recordings-store.ts Lokal MP3-lagring i IndexedDB
 src/lib/recording-format.ts Formatval och inspelningsfel
 src/lib/catalog.ts       Officiella källor och färsk metadata
@@ -206,5 +222,7 @@ Remove-Item Env:LIVE_TEST_ORIGIN
 ```
 
 `test:audio-level` spelar in syntetiskt stereoljud med sex tysta/starka steg och jämför avkodat inspelningsljud och MP3 per kanal. Det kontrollerar nivåavvikelse (högst 1 dB), bevarad dynamik, stereo, oförändrad uppspelningsvolym och borttagning av gamla ReplayGain-taggar. Samma test kan köras mot den lokala Node-versionen och Sites-versionen via `LIVE_TEST_ORIGIN`. Resultat finns i ignorerade `test-results/audio-level-*.json`. Testet använder inga fysiska ljud- eller skärmkällor.
+
+`npm.cmd run test:audio-edit` testar klippning på dator- och mobilbredd. Det avkodar MP3-filen och kontrollerar att borttagna testtoner saknas, rätt längd, stereo och bevarad nivå (högst 1 dB avvikelse). Sparade kopior kontrolleras efter omladdning och originalet jämförs byte för byte. En ny syntetisk MediaRecorder-inspelning redigeras också. Kör med `LIVE_TEST_ORIGIN` mot port 3000 (native FFmpeg) eller 3003 (Sites/FFmpeg WASM). Inga fysiska ljudkällor används.
 
 Beroenden och FFmpeg har egna licenser; se respektive paket och `node_modules/ffmpeg-static/LICENSE`. Nedladdad musiks licens följer inte automatiskt av projektets programkod.

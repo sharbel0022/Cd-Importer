@@ -4,9 +4,10 @@ import { isRealMp3, safeFilename, contentDisposition } from "../src/lib/media-fo
 import { parseBitrate, parseTrackRef } from "../src/lib/request-validators";
 import { trackQuery } from "../src/lib/types";
 import { AppError, errorResponse } from "../src/lib/errors";
+import { audioEditArguments, parseAudioCuts, type AudioCut } from "../src/lib/audio-edits";
 const SUPPORTED = new Set(["wav", "flac", "m4a", "mp3", "aac", "ogg", "oga", "aiff", "aif", "opus", "webm"]);
 let converting = false;
-async function convert(bytes: Uint8Array, extension: string, bitrate: number, signal?: AbortSignal): Promise<Uint8Array> {
+async function convert(bytes: Uint8Array, extension: string, bitrate: number, signal?: AbortSignal, cuts: AudioCut[] = []): Promise<Uint8Array> {
   if (signal?.aborted) throw new AppError("Konverteringen avbröts.");
   if (converting) throw new AppError("En konvertering pågår. Vänta tills den är klar.", 429);
   if (!SUPPORTED.has(extension) || !bytes.length || bytes.length > 25 * 1024 * 1024) throw new AppError("Välj ett ljudformat som stöds, högst 25 MB.", 413);
@@ -29,7 +30,7 @@ async function convert(bytes: Uint8Array, extension: string, bitrate: number, si
     await ffmpeg.load({ coreURL: new URL("/ffmpeg/ffmpeg-core.js", location.href).href, wasmURL: wasmUrl }, { signal: controller.signal });
     await ffmpeg.writeFile(`input.${extension}`, bytes, { signal: controller.signal });
     const formats: Record<string, string> = { webm: "matroska", m4a: "mov", ogg: "ogg", oga: "ogg", opus: "ogg", wav: "wav", flac: "flac" };
-    const code = await ffmpeg.exec(["-hide_banner", "-protocol_whitelist", "file,pipe", ...(formats[extension] ? ["-f", formats[extension]] : []), "-i", `input.${extension}`, "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1", "-map_metadata:s:a", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`, "-fs", "26214400", "output.mp3"], 120_000, { signal: controller.signal });
+    const code = await ffmpeg.exec(["-hide_banner", "-protocol_whitelist", "file,pipe", ...(formats[extension] ? ["-f", formats[extension]] : []), "-i", `input.${extension}`, ...audioEditArguments(cuts), "-vn", "-sn", "-dn", "-map_metadata", "-1", "-map_metadata:s:a", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`, "-fs", "26214400", "output.mp3"], 120_000, { signal: controller.signal });
     if (code !== 0) throw new AppError("Ljudet kunde inte konverteras. Filen kan vara skadad eller för stor.", 422);
     const output = await ffmpeg.readFile("output.mp3", "binary", { signal: controller.signal });
     if (!(output instanceof Uint8Array) || !isRealMp3(output)) throw new AppError("Konverteringen skapade ingen giltig MP3.", 422);
@@ -52,7 +53,8 @@ async function ownFile(init: RequestInit): Promise<Response> {
   if (!file.size || file.size > 25 * 1024 * 1024) throw new AppError("Välj en ljudfil på högst 25 MB.", 413);
   const title = String(data.get("title") ?? file.name.replace(/\.[^.]+$/, "")); const artist = String(data.get("artist") ?? "");
   if (title.length > 200 || artist.length > 200) throw new AppError("Namnet får vara högst 200 tecken.");
-  const output = await convert(new Uint8Array(await file.arrayBuffer()), file.name.split(".").pop()?.toLowerCase() ?? "", parseBitrate(data.get("bitrate")), init.signal ?? undefined);
+  const cuts = parseAudioCuts(data.get("cuts"));
+  const output = await convert(new Uint8Array(await file.arrayBuffer()), file.name.split(".").pop()?.toLowerCase() ?? "", parseBitrate(data.get("bitrate")), init.signal ?? undefined, cuts);
   return mp3Response(output, safeFilename(artist, title));
 }
 async function remoteFile(input: string, init?: RequestInit): Promise<Response> {

@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type SyntheticEvent } from "react";
-import { Check, CheckCircle2, Download, LoaderCircle, Mic, MonitorSpeaker, ShieldCheck, Square, Trash2, X } from "lucide-react";
+import { Check, CheckCircle2, Download, LoaderCircle, Mic, MonitorSpeaker, Scissors, ShieldCheck, Square, Trash2, X } from "lucide-react";
 import type { Bitrate } from "@/lib/types";
 import { musicRequest } from "@/lib/music-request";
 import { computerAudioError, microphoneError, recordingExtension, selectRecordingMime } from "@/lib/recording-format";
 import { deleteRecording, listRecordings, MAX_RECORDINGS, saveRecording, type StoredRecording } from "@/lib/recordings-store";
 import type { ServiceStatus } from "./converter";
 import { playbackTime, readableBytes, responseError, responseFilename } from "./client-utils";
+import AudioEditor, { type EditableAudio, type EditedAudio } from "./audio-editor";
 
 type Phase = "idle" | "permission" | "recording" | "stopping" | "converting";
 type CaptureMode = "microphone" | "computer";
@@ -65,6 +66,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
   const [loadingSaved, setLoadingSaved] = useState(true);
   const [removing, setRemoving] = useState<string>();
   const [fallback, setFallback] = useState<StoredRecording | null>(null);
+  const [editing, setEditing] = useState<EditableAudio | null>(null);
   const previewUrl = useAudioUrl(recording?.blob ?? null);
   const fallbackUrl = useAudioUrl(fallback?.blob ?? null);
   const uploadMb = status?.limits.uploadMb ?? 100;
@@ -304,6 +306,16 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     finally { if (aliveRef.current) setRemoving(undefined); }
   };
 
+  const saveEdited = async (audio: EditedAudio): Promise<string> => {
+    const item: StoredRecording = {
+      id: crypto.randomUUID(), title: audio.title, filename: audio.file.name, createdAt: Date.now(),
+      duration: audio.duration, bitrate: audio.bitrate, blob: new Blob([audio.file], { type: "audio/mpeg" }),
+    };
+    await saveRecording(item);
+    if (aliveRef.current) { setSaved(items => [item, ...items]); setStorageError(undefined); }
+    return "Din redigerade kopia är sparad under Sparade inspelningar. Originalet finns kvar.";
+  };
+
   return (
     <section className="converter-page recording-page">
       <div className="section-eyebrow"><span className="small-dot" /> FRÅN DITT LJUD TILL MP3.</div>
@@ -331,7 +343,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
             </div>
             <small>Högst 10 minuter · Max {uploadMb} MB</small>
           </div>
-          {previewUrl && <div className="recording-preview"><strong>Lyssna innan du sparar</strong><audio controls={phase === "idle"} onPlay={playPreview} preload="metadata" src={previewUrl} aria-label="Lyssna på inspelningen" /></div>}
+          {previewUrl && <div className="recording-preview"><strong>Lyssna innan du sparar</strong><audio controls={phase === "idle"} onPlay={playPreview} preload="metadata" src={previewUrl} aria-label="Lyssna på inspelningen" /><button type="button" className="button button-secondary" disabled={phase !== "idle" || status?.ffmpeg.available === false} onClick={() => { if (recording) setEditing({ file: new File([recording.blob], `inspelning.${recordingExtension(recording.blob.type)}`, { type: recording.blob.type }), title: title.trim() || "Min inspelning", duration: recording.duration, bitrate }); }}><Scissors size={17} /> Redigera ljud</button></div>}
           <div className="step-heading"><span>02</span><h2>Spara som MP3</h2></div>
           <div className="file-details recording-title"><label>Namn på inspelningen<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={150} required placeholder="Till exempel Min nya låtidé" disabled={phase !== "idle"} /></label></div>
           <div className="quality-options" role="radiogroup" aria-label="Inspelningens MP3-kvalitet">{qualities.map((quality) => <label key={quality.bitrate} className={`quality-option ${bitrate === quality.bitrate ? "quality-selected" : ""}`}><input className="sr-only" type="radio" name="recording-bitrate" value={quality.bitrate} checked={bitrate === quality.bitrate} onChange={() => setBitrate(quality.bitrate)} disabled={phase !== "idle"} aria-label={`${quality.bitrate} kbps, ${quality.name}`} /><strong>{quality.bitrate}<span> kbps</span></strong><small>{quality.name}</small>{bitrate === quality.bitrate && <Check size={13} />}</label>)}</div>
@@ -349,13 +361,14 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
       <section className="recordings-panel panel" aria-labelledby="saved-recordings-heading">
         <div className="recordings-heading"><h2 id="saved-recordings-heading">Sparade inspelningar</h2><span>{saved.length} / {MAX_RECORDINGS}</span></div>
         {storageError && <div className="notice notice-warning" role="alert">{storageError}</div>}
-        {loadingSaved ? <p className="recordings-empty">Hämtar dina sparade inspelningar…</p> : !saved.length ? <p className="recordings-empty">Din första MP3 visas här när du har spelat in och sparat.</p> : <div className="recordings-list">{saved.map((item) => <SavedRecording key={item.id} item={item} removing={removing === item.id} playbackDisabled={phase !== "idle"} onPlay={playPreview} onRemove={() => void removeSaved(item)} />)}</div>}
+        {loadingSaved ? <p className="recordings-empty">Hämtar dina sparade inspelningar…</p> : !saved.length ? <p className="recordings-empty">Din första MP3 visas här när du har spelat in och sparat.</p> : <div className="recordings-list">{saved.map((item) => <SavedRecording key={item.id} item={item} removing={removing === item.id} playbackDisabled={phase !== "idle"} editingDisabled={phase !== "idle" || !!removing || status?.ffmpeg.available === false} onPlay={playPreview} onRemove={() => void removeSaved(item)} onEdit={() => setEditing({ file: new File([item.blob], item.filename, { type: "audio/mpeg" }), title: item.title, duration: item.duration, bitrate: item.bitrate })} />)}</div>}
       </section>
+      {editing && <AudioEditor source={editing} onClose={() => setEditing(null)} onSave={saveEdited} />}
     </section>
   );
 }
 
-function SavedRecording({ item, removing, playbackDisabled, onPlay, onRemove }: { item: StoredRecording; removing: boolean; playbackDisabled: boolean; onPlay: (event: SyntheticEvent<HTMLAudioElement>) => void; onRemove: () => void }) {
+function SavedRecording({ item, removing, playbackDisabled, editingDisabled, onPlay, onRemove, onEdit }: { item: StoredRecording; removing: boolean; playbackDisabled: boolean; editingDisabled: boolean; onPlay: (event: SyntheticEvent<HTMLAudioElement>) => void; onRemove: () => void; onEdit: () => void }) {
   const url = useAudioUrl(item.blob);
-  return <article className="recording-item"><div className="recording-item-details"><h3>{item.title}</h3><p>{new Date(item.createdAt).toLocaleString("sv-SE", { dateStyle: "short", timeStyle: "short" })} · {playbackTime(item.duration)} · {item.bitrate} kbps · {readableBytes(item.blob.size)}</p>{url && <audio controls={!playbackDisabled} onPlay={onPlay} preload="none" src={url} aria-label={`Lyssna på ${item.title}`} />}</div><div className="recording-item-actions">{url && <a className="button button-secondary" href={url} download={item.filename}><Download size={15} /> Ladda ner MP3</a>}<button type="button" className="icon-button" disabled={removing} onClick={onRemove} aria-label={`Ta bort ${item.title}`}>{removing ? <LoaderCircle size={17} className="spin" /> : <Trash2 size={17} />}</button></div></article>;
+  return <article className="recording-item"><div className="recording-item-details"><h3>{item.title}</h3><p>{new Date(item.createdAt).toLocaleString("sv-SE", { dateStyle: "short", timeStyle: "short" })} · {playbackTime(item.duration)} · {item.bitrate} kbps · {readableBytes(item.blob.size)}</p>{url && <audio controls={!playbackDisabled} onPlay={onPlay} preload="none" src={url} aria-label={`Lyssna på ${item.title}`} />}</div><div className="recording-item-actions"><button type="button" className="button button-secondary" disabled={editingDisabled} onClick={onEdit} aria-label={`Redigera ${item.title}`}><Scissors size={15} /> Redigera</button>{url && <a className="button button-secondary" href={url} download={item.filename}><Download size={15} /> Ladda ner MP3</a>}<button type="button" className="icon-button" disabled={removing || playbackDisabled} onClick={onRemove} aria-label={`Ta bort ${item.title}`}>{removing ? <LoaderCircle size={17} className="spin" /> : <Trash2 size={17} />}</button></div></article>;
 }
