@@ -71,7 +71,7 @@ export async function convertToMp3(input: Buffer, bitrate: Bitrate, extension: s
     await runFFmpeg([
       "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
       "-f", inputFormat[extension], "-i", inputPath, "-map", "0:a:0", "-vn", "-sn", "-dn",
-      "-map_metadata", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`,
+      "-map_metadata", "-1", "-map_metadata:s:a", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`,
       "-fs", String(MAX_CONVERSION_BYTES), "-f", "mp3", outputPath,
     ], 120_000, signal);
     const info = await stat(outputPath);

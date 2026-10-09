@@ -17,6 +17,7 @@
     "test:ui": "node scripts/ui-check.mjs",
     "test:recording": "node --import tsx scripts/recording-check.mjs",
     "test:computer-recording": "node --import tsx scripts/computer-recording-check.mjs",
+    "test:audio-level": "node --import tsx scripts/audio-level-check.mjs",
     "build:sites": "node scripts/build-sites.mjs",
     "dev:sites": "wrangler dev --config sites/wrangler.jsonc --port 3003",
     "test:sites": "node --import tsx scripts/sites-check.mjs"

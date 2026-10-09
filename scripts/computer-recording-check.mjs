@@ -28,7 +28,13 @@ async function syntheticCapture(context) {
       if (window.__captureBehavior !== "no-audio") {
         const audio = new AudioContext(); const tone = audio.createOscillator(); tone.frequency.value = 440;
         const destination = audio.createMediaStreamDestination(); tone.connect(destination); tone.start(); await audio.resume();
-        destination.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+        destination.stream.getAudioTracks().forEach(track => {
+          if (window.__captureBehavior === "processed") {
+            const settings = track.getSettings.bind(track);
+            track.getSettings = () => ({ ...settings(), autoGainControl: true });
+          }
+          stream.addTrack(track);
+        });
       }
       window.__captures.push(stream);
       return stream;
@@ -88,7 +94,9 @@ try {
       assert.equal(await page.locator(".music-player audio").evaluate(audio => audio.paused), false, "Computer capture must not pause the audio being captured");
       assert.equal(await page.evaluate(() => window.__recorderStreams.every(stream => stream.getVideoTracks().length === 0 && stream.getAudioTracks().length > 0)), true);
       const request = await page.evaluate(() => window.__captureRequests[0]);
-      assert.equal(request.gesture, true); assert.equal(request.options.video, true); assert.equal(request.options.audio, true); assert.equal(request.options.systemAudio, "include");
+      assert.equal(request.gesture, true); assert.equal(request.options.video, true); assert.equal(request.options.systemAudio, "include");
+      assert.equal(request.options.audio.autoGainControl, false); assert.equal(request.options.audio.noiseSuppression, false); assert.equal(request.options.audio.echoCancellation, false);
+      assert.equal(request.options.audio.suppressLocalAudioPlayback, false); assert.deepEqual(request.options.audio.channelCount, { ideal: 2 });
       await page.waitForTimeout(1800);
       if (width === 1440) {
         // Model the browser's Stop sharing action, independently of the app button.
@@ -138,5 +146,16 @@ try {
     assert.equal(await preview.getAttribute("src"), previous);
     console.log("OK: missing audio, cancelled/denied picker, late permission and unavailable API preserve previous recording and close every track");
   } finally { await context.close(); }
+  const processedContext = await browser.newContext(); await syntheticCapture(processedContext);
+  await processedContext.addInitScript(() => { window.__captureBehavior = "processed"; });
+  const processedPage = await processedContext.newPage(); processedPage.on("pageerror", error => errors.push(error.message));
+  try {
+    await openRecorder(processedPage);
+    await processedPage.getByRole("button", { name: "Starta inspelning", exact: true }).click();
+    await expect(processedPage.getByRole("status").filter({ hasText: "Webbläsaren använder fortfarande ljudbehandling" })).toBeVisible();
+    await processedPage.getByRole("button", { name: "Stoppa inspelning", exact: true }).click();
+    await assertStopped(processedPage);
+    console.log("OK: processing still reported by the browser is explained rather than claiming guaranteed raw audio");
+  } finally { await processedContext.close(); }
   assert.deepEqual(errors, []); console.log("PASS: computer recording, MP3 and capture lifecycle; no physical devices accessed");
 } finally { await browser.close(); }

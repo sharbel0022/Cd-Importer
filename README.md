@@ -28,6 +28,7 @@ $env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3003"
 npm.cmd run test:ui
 npm.cmd run test:recording
 npm.cmd run test:computer-recording
+npm.cmd run test:audio-level
 npm.cmd run test:sites
 Remove-Item Env:LIVE_TEST_ORIGIN
 ```
@@ -83,6 +84,7 @@ ipconfig
 - **Konvertera egna filer:** välj ljudfil, bekräfta att du har rätt att konvertera och välj 128, 192, 256 eller 320 kbps. M4A konverteras till riktig MP3. En befintlig MP3 kodas också om med vald kvalitet; filändelsen byts inte bara ut. WAV, FLAC, OGG, AAC och AIFF stöds också. Högre kvalitet återskapar inte information som saknas i originalet.
 - **Spela in ljud:** välj **Mikrofon** för röst och bakgrundsljud eller **Datorljud** för ljud från en delad flik/skärm. Välj **Starta inspelning** och ge tillstånd. I datorläget väljer du en flik med **Dela flikens ljud**, eller hela skärmen med systemljud om alternativet finns. Chrome/Edge på Windows rekommenderas; ett vanligt programfönster kan sakna ljuddelning. Ingen video sparas och datorläget öppnar inte mikrofonen. Saknas ljuddelning visas ett fel. Mobilwebbläsare kan sakna datorläget; mikrofon och filkonvertering fungerar där med HTTPS. Läs [webbläsarens dokumentation om ljud- och skärmdelning](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia).
 - **Spara inspelningen:** välj **Stoppa inspelning**, lyssna, ange ett namn och välj 128, 192, 256 eller 320 kbps. Bekräfta dina rättigheter och välj **Spara som MP3**. FFmpeg skapar en riktig MP3 under **Sparade inspelningar** med uppspelning, **Ladda ner MP3** och radering. Alla mikrofon-/delningsspår stängs efter inspelning, fel eller stängd vy. Webbläsarens **Sluta dela** avslutar också inspelningen och behåller ljudet fram till avbrottet. Högst 10 minuter och uppladdningsgränsen gäller per inspelning. Öppna Site-adressen direkt om en inbäddad webbläsare blockerar skärmdelning.
+- **Bevara ljudnivån:** för datorns uppspelning väljer du **Datorljud**. Appen begär avstängd automatisk volymjustering, brusreducering och ekodämpning i båda lägena. Datorläget föredrar stereo, håller lokal uppspelning igång och begär 320 kbps i inspelningssteget. MP3-valet blir 320 kbps när du väljer datorläget; du kan välja en annan kvalitet. Om ljudspårets inställningar visar fortsatt ljudbehandling visas en varning. FFmpeg lägger inte på volymfilter och kopierar inte gamla ReplayGain-/volymtaggar till MP3. Webbläsaren kan ignorera önskemål: [ljudinställningar och begränsningar](https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackConstraints/autoGainControl). MP3 är komprimerat och den delade digitala signalen kan skilja sig från det du hör efter datorns/hörlurarnas volym, EQ och ljudförbättringar. En identisk kopia av ljudet vid örat kan inte garanteras. Ändringarna gäller nya inspelningar; redan inspelade nivåändringar återskapas inte automatiskt.
 - **CD-import:** exportera spåren från en CD du har rätt att kopiera med ditt vanliga CD-program, exempelvis som WAV, och konvertera filerna i appen. Webbläsaren kan inte läsa en fysisk ljud-CD eller `.cda`-genvägar direkt. Appen har ingen funktion som kringgår kopieringsskydd.
 - **Originalkälla:** länken finns alltid i informationen och visas vid hämtningsproblem. Du kan där läsa villkor och använda källans egna alternativ.
 
@@ -199,7 +201,10 @@ Inspelningsflödet har ett separat test med Chromiums simulerade mikrofon; teste
 $env:LIVE_TEST_ORIGIN = "http://127.0.0.1:3000"
 npm.cmd run test:recording
 npm.cmd run test:computer-recording
+npm.cmd run test:audio-level
 Remove-Item Env:LIVE_TEST_ORIGIN
 ```
+
+`test:audio-level` spelar in syntetiskt stereoljud med sex tysta/starka steg och jämför avkodat inspelningsljud och MP3 per kanal. Det kontrollerar nivåavvikelse (högst 1 dB), bevarad dynamik, stereo, oförändrad uppspelningsvolym och borttagning av gamla ReplayGain-taggar. Samma test kan köras mot den lokala Node-versionen och Sites-versionen via `LIVE_TEST_ORIGIN`. Resultat finns i ignorerade `test-results/audio-level-*.json`. Testet använder inga fysiska ljud- eller skärmkällor.
 
 Beroenden och FFmpeg har egna licenser; se respektive paket och `node_modules/ffmpeg-static/LICENSE`. Nedladdad musiks licens följer inte automatiskt av projektets programkod.

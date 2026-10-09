@@ -13,6 +13,8 @@ type Phase = "idle" | "permission" | "recording" | "stopping" | "converting";
 type CaptureMode = "microphone" | "computer";
 type Recording = { blob: Blob; duration: number };
 const MAX_SECONDS = 600;
+// Music capture should not run through speech enhancement or automatic gain.
+const unprocessedAudio: MediaTrackConstraints = { autoGainControl: false, echoCancellation: false, noiseSuppression: false };
 const qualities: { bitrate: Bitrate; name: string }[] = [
   { bitrate: 128, name: "Liten fil" }, { bitrate: 192, name: "Balanserad" },
   { bitrate: 256, name: "Hög kvalitet" }, { bitrate: 320, name: "Bäst kvalitet" },
@@ -57,6 +59,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
+  const [captureWarning, setCaptureWarning] = useState<string>();
   const [storageError, setStorageError] = useState<string>();
   const [saved, setSaved] = useState<StoredRecording[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(true);
@@ -129,6 +132,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     if (phaseRef.current !== "idle") return;
     setError(undefined);
     setMessage(undefined);
+    setCaptureWarning(undefined);
     if (!window.isSecureContext) { setError("Ljudinspelning kräver en säker anslutning. Öppna appen via localhost, 127.0.0.1 eller HTTPS."); return; }
     if (typeof MediaRecorder === "undefined") { setError("Din webbläsare stöder inte ljudinspelning. Prova en aktuell version av Chrome, Edge, Firefox eller Safari."); return; }
     if (mode === "microphone" && !navigator.mediaDevices?.getUserMedia) { setError("Din webbläsare stöder inte mikrofoninspelning. Prova en aktuell webbläsare."); return; }
@@ -138,9 +142,10 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
     if (mode === "microphone") pauseOtherAudio();
     changePhase("permission");
     try {
-      const displayOptions: DisplayMediaStreamOptions & { systemAudio: "include" } = { video: true, audio: true, systemAudio: "include" };
+      const displayAudio: MediaTrackConstraints & { suppressLocalAudioPlayback: boolean } = { ...unprocessedAudio, channelCount: { ideal: 2 }, suppressLocalAudioPlayback: false };
+      const displayOptions: DisplayMediaStreamOptions & { systemAudio: "include" } = { video: true, audio: displayAudio, systemAudio: "include" };
       // Call directly from the click: screen sharing requires a user gesture.
-      const stream = await (mode === "computer" ? navigator.mediaDevices.getDisplayMedia(displayOptions) : navigator.mediaDevices.getUserMedia({ audio: true }));
+      const stream = await (mode === "computer" ? navigator.mediaDevices.getDisplayMedia(displayOptions) : navigator.mediaDevices.getUserMedia({ audio: unprocessedAudio }));
       if (!aliveRef.current || attempt !== attemptRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       streamRef.current = stream;
       const audioTracks = stream.getAudioTracks().filter((track) => track.readyState === "live");
@@ -152,8 +157,15 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
       }
       // Keep the display stream alive to observe Stop sharing, but record audio only.
       const audioStream = new MediaStream(audioTracks);
+      // Constraints are best effort. Explain when a browser reports processing
+      // remains enabled rather than claiming that every device supplies raw audio.
+      if (audioTracks.some((track) => {
+        const settings = track.getSettings();
+        const echo = settings.echoCancellation as boolean | string | undefined;
+        return settings.autoGainControl === true || echo === true || echo === "all" || echo === "remote-only" || settings.noiseSuppression === true;
+      })) setCaptureWarning("Webbläsaren använder fortfarande ljudbehandling som kan ändra nivån. För datorns ljud: prova Datorljud och dela en flik med ljud i Chrome eller Edge.");
       const mime = typeof MediaRecorder.isTypeSupported === "function" ? selectRecordingMime((type) => MediaRecorder.isTypeSupported(type)) : undefined;
-      const recorder = mime ? new MediaRecorder(audioStream, { mimeType: mime, audioBitsPerSecond: 128_000 }) : new MediaRecorder(audioStream);
+      const recorder = new MediaRecorder(audioStream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: mode === "computer" ? 320_000 : 192_000 });
       recorderRef.current = recorder;
       chunksRef.current = [];
       bytesRef.current = 0;
@@ -303,9 +315,11 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
           <fieldset className="capture-modes" disabled={phase !== "idle"}>
             <legend>Välj vad du vill spela in</legend>
             <label className={`capture-mode ${mode === "microphone" ? "capture-selected" : ""}`}><input type="radio" name="capture-mode" aria-label="Mikrofon" checked={mode === "microphone"} onChange={() => setMode("microphone")} /><Mic size={22} /><strong>Mikrofon</strong><span>Din röst och ljud omkring dig</span></label>
-            <label className={`capture-mode ${mode === "computer" ? "capture-selected" : ""}`}><input type="radio" name="capture-mode" aria-label="Datorljud" checked={mode === "computer"} onChange={() => setMode("computer")} /><MonitorSpeaker size={22} /><strong>Datorljud</strong><span>Ljud från en flik eller datorn</span></label>
+            <label className={`capture-mode ${mode === "computer" ? "capture-selected" : ""}`}><input type="radio" name="capture-mode" aria-label="Datorljud" checked={mode === "computer"} onChange={() => { setMode("computer"); setBitrate(320); }} /><MonitorSpeaker size={22} /><strong>Datorljud</strong><span>Ljud från en flik eller datorn</span></label>
           </fieldset>
           {mode === "computer" && <p className="capture-help">Välj en flik eller hela skärmen i delningsrutan och aktivera ljuddelning. Chrome eller Edge på Windows rekommenderas. Ljudstödet beror på vad du delar. Endast ljud sparas; ingen video spelas in.</p>}
+          <p className="capture-help">För datorns uppspelning väljer du Datorljud. Appen begär att automatisk volymjustering, brusreducering och ekodämpning stängs av. Inga volymfilter läggs på när du sparar.</p>
+          {captureWarning && <div className="notice notice-warning" role="status">{captureWarning}</div>}
           <div className={`recording-stage ${phase === "recording" ? "is-recording" : ""}`}>
             <span className="recording-indicator" aria-hidden="true">{mode === "computer" ? <MonitorSpeaker size={30} /> : <Mic size={30} />}</span>
             <div className="recording-clock" role="timer" aria-label="Inspelningstid">{playbackTime(elapsed)}</div>
@@ -313,7 +327,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
             <div className="recording-controls">
               {phase === "recording" ? <button type="button" className="button button-primary" onClick={() => stopRecording()}><Square size={16} /> Stoppa inspelning</button>
                 : phase === "permission" ? <><button type="button" className="button button-secondary" disabled><LoaderCircle className="spin" size={16} /> {mode === "computer" ? "Väntar på ljuddelning…" : "Väntar på mikrofon…"}</button><button type="button" className="button button-secondary" onClick={cancelPermission}><X size={16} /> Avbryt</button></>
-                : <button type="button" className="button button-primary" onClick={() => void startRecording()} disabled={phase !== "idle"}><Mic size={17} /> {recording ? "Ny inspelning" : "Starta inspelning"}</button>}
+                : <button type="button" className="button button-primary" onClick={() => void startRecording()} disabled={phase !== "idle"}>{mode === "computer" ? <MonitorSpeaker size={17} /> : <Mic size={17} />} {recording ? "Ny inspelning" : "Starta inspelning"}</button>}
             </div>
             <small>Högst 10 minuter · Max {uploadMb} MB</small>
           </div>
@@ -321,6 +335,7 @@ export default function Recorder({ status, onRecordingChange }: { status: Servic
           <div className="step-heading"><span>02</span><h2>Spara som MP3</h2></div>
           <div className="file-details recording-title"><label>Namn på inspelningen<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={150} required placeholder="Till exempel Min nya låtidé" disabled={phase !== "idle"} /></label></div>
           <div className="quality-options" role="radiogroup" aria-label="Inspelningens MP3-kvalitet">{qualities.map((quality) => <label key={quality.bitrate} className={`quality-option ${bitrate === quality.bitrate ? "quality-selected" : ""}`}><input className="sr-only" type="radio" name="recording-bitrate" value={quality.bitrate} checked={bitrate === quality.bitrate} onChange={() => setBitrate(quality.bitrate)} disabled={phase !== "idle"} aria-label={`${quality.bitrate} kbps, ${quality.name}`} /><strong>{quality.bitrate}<span> kbps</span></strong><small>{quality.name}</small>{bitrate === quality.bitrate && <Check size={13} />}</label>)}</div>
+          {mode === "computer" && <p className="capture-help">320 kbps är förvalt för att bevara ljudet så troget som möjligt. MP3 är komprimerat; datorns högtalarvolym och ljudförbättringar motsvarar inte alltid den delade digitala signalen.</p>}
           <label className="rights-checkbox"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required disabled={phase !== "idle"} /><span>Jag äger inspelningen eller har tillstånd att spela in och konvertera ljudet.</span></label>
           {error && <div className="notice notice-error" role="alert">{error}</div>}
           {message && <div className="conversion-success" role="status"><CheckCircle2 size={21} /><div><p>{message}</p></div></div>}

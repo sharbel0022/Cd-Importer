@@ -29,7 +29,7 @@ async function convert(bytes: Uint8Array, extension: string, bitrate: number, si
     await ffmpeg.load({ coreURL: new URL("/ffmpeg/ffmpeg-core.js", location.href).href, wasmURL: wasmUrl }, { signal: controller.signal });
     await ffmpeg.writeFile(`input.${extension}`, bytes, { signal: controller.signal });
     const formats: Record<string, string> = { webm: "matroska", m4a: "mov", ogg: "ogg", oga: "ogg", opus: "ogg", wav: "wav", flac: "flac" };
-    const code = await ffmpeg.exec(["-hide_banner", "-protocol_whitelist", "file,pipe", ...(formats[extension] ? ["-f", formats[extension]] : []), "-i", `input.${extension}`, "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`, "-fs", "26214400", "output.mp3"], 120_000, { signal: controller.signal });
+    const code = await ffmpeg.exec(["-hide_banner", "-protocol_whitelist", "file,pipe", ...(formats[extension] ? ["-f", formats[extension]] : []), "-i", `input.${extension}`, "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1", "-map_metadata:s:a", "-1", "-c:a", "libmp3lame", "-b:a", `${bitrate}k`, "-fs", "26214400", "output.mp3"], 120_000, { signal: controller.signal });
     if (code !== 0) throw new AppError("Ljudet kunde inte konverteras. Filen kan vara skadad eller för stor.", 422);
     const output = await ffmpeg.readFile("output.mp3", "binary", { signal: controller.signal });
     if (!(output instanceof Uint8Array) || !isRealMp3(output)) throw new AppError("Konverteringen skapade ingen giltig MP3.", 422);
