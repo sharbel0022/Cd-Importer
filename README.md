@@ -49,6 +49,10 @@ Förhandslyssning hoppar ungefär över markerade delar; den färdiga MP3-filen 
 
 Samma storleks- och tidsgränser som vanlig konvertering gäller. Klipptider valideras på både lokalservern och i Sites-versionen; användaren kan inte skicka godtyckliga FFmpeg-filter eller externa URL:er. Redigering gäller egna eller uttryckligen tillåtna ljudfiler.
 
+## CD Importer Studio
+
+Den nya studioprototypen nås via **CD Importer Studio** i sidomenyn eller `/studio/index.html`. Den innehåller lokal ljudredigering, notredigering, projektfiler och undertexter. AI-backend och videorendering återstår. Se [funktioner och begränsningar](docs/studio.md). Kör `node scripts/studio-check.cjs` för studions format- och redigeringskontroller.
+
 ## Starta på Windows med PowerShell
 
 Installera **Node.js 22.16 eller senare LTS**, Git och valfritt VS Code. FFmpeg för din plattform hämtas automatiskt av `ffmpeg-static` vid paketinstallationen. Ett separat FFmpeg kan användas via `FFMPEG_PATH`.

@@ -273,6 +273,7 @@ export default function MusicApp() {
           <button className={`nav-item ${view === "queue" ? "nav-active" : ""}`} onClick={() => setView("queue")} aria-current={view === "queue" ? "page" : undefined}><ListMusic size={20} /><span>Nedladdningslista</span><span className="nav-count">{queue.length}</span></button>
           <button className={`nav-item ${view === "convert" ? "nav-active" : ""}`} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera & CD</span></button>
           <button className={`nav-item ${view === "record" ? "nav-active" : ""}`} onClick={() => setView("record")} aria-current={view === "record" ? "page" : undefined}><Mic size={20} /><span>Spela in ljud</span></button>
+          <button className="nav-item" onClick={() => { if (recordingBusy) { setToast("Avsluta inspelningen eller bearbetningen innan du öppnar studion."); return; } window.location.assign("/studio/index.html"); }}><Sparkles size={20} /><span>CD Importer Studio</span></button>
         </nav>
         <div className="sidebar-divider" />
         <div className="sidebar-label">ÖPPNA MUSIKKÄLLOR</div>
