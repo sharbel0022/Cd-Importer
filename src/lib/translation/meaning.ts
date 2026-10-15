@@ -216,12 +216,14 @@ function hasNegation(text: string, language: string) {
 /** Deterministic fact anchors complement the bilingual model review. Arabic
  * name transliteration and full semantic equivalence still require that review. */
 export function translationPreservesFacts(source: string, candidate: string, sourceLanguage = "auto", targetLanguage = "en"): { ok: boolean; missing: string[] } {
+  sourceLanguage = ({ arabic: "ar", english: "en", swedish: "sv" } as Record<string, string>)[sourceLanguage.toLowerCase()] || sourceLanguage;
   const missing: string[] = [];
   const sourceNumbers = factNumbers(source, sourceLanguage);
   const candidateNumbers = factNumbers(candidate, targetLanguage);
   for (const value of sourceNumbers) if (!candidateNumbers.has(value)) missing.push(`tal:${value}`);
   for (const value of candidateNumbers) if (!sourceNumbers.has(value)) missing.push(`tillagt-tal:${value}`);
   if (hasNegation(source, sourceLanguage) !== hasNegation(candidate, targetLanguage)) missing.push("negation");
+  if (sourceLanguage === "en" && targetLanguage === "sv" && /\bmiles?\b/iu.test(source) && !/\b(?:engelska\s+mil|miles?)\b/iu.test(candidate)) missing.push("enhet:mile");
   // A capitalized common noun at the beginning of a sentence is not evidence
   // of a name (Huset, Friday, Welcome). Cross-language Latin names are only
   // deterministic anchors when embedded in Arabic; the bilingual accuracy

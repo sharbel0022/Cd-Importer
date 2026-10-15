@@ -7,10 +7,9 @@ import { createWriteStream } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { AppError } from "../errors";
 import { atomicJson, durationLimit, enforceQuota, jobDir, readJob, updateJob } from "./store";
-import { capabilities, describeVideo, diarize, resolveVoice, separate, synthesize, transcribe, translate, TranslationIntegrityError, validateOptions, type Turn } from "./providers";
-import { chunk, createTimeline, ffmpeg, inputArgs, inspect, normalize, placeSpeech, renderTrack, renderVideo, silenceBoundaries, speechDuration, SpeechWindowError, trimSpeech, waveform } from "./media";
-import { subtitles, timingPlan, type Job, type Segment, type Stage, type Translation } from "./types";
-import { shorteningPreservesAnchors } from "./meaning";
+import { capabilities, diarize, resolveVoice, separate, synthesize, transcribe, translate, TranslationIntegrityError, validateOptions, type Turn } from "./providers";
+import { chunk, createTimeline, ffmpeg, inputArgs, inspect, normalize, placeSpeech, renderTrack, renderVideo, silenceBoundaries, speechDuration, SpeechWindowError, trimSpeech, verifyExport, waveform } from "./media";
+import { pendingSourceSegments, subtitles, timingPlan, type Job, type Segment, type Stage, type Translation } from "./types";
 
 async function exists(file: string) { try { return (await stat(file)).size > 0; } catch { return false; } }
 function hash(text: string) { return createHash("sha256").update(text).digest("hex").slice(0, 32); }
@@ -24,7 +23,7 @@ export function phraseSegments(segments: Segment[]): Segment[] {
   for (const segment of segments) {
     const last = result.at(-1);
     if (last && last.speaker === segment.speaker && last.end - last.start < 2.5 && segment.start - last.end >= -0.04 && segment.start - last.end <= 0.4 && segment.end - last.start <= 7.5 && !/[.!?؟。]$/.test(last.text.trim())) {
-      last.text += ` ${segment.text}`; last.end = segment.end; last.uncertain ||= segment.uncertain;
+      last.text += ` ${segment.text}`; last.end = segment.end; last.uncertain ||= segment.uncertain; last.codeSwitch ||= segment.codeSwitch;
       if (last.qualityReasons || segment.qualityReasons) last.qualityReasons = [...new Set([...(last.qualityReasons || []), ...(segment.qualityReasons || [])])];
       if (segment.confidence !== undefined) last.confidence = Math.min(last.confidence ?? 1, segment.confidence);
       if (last.rawText || segment.rawText) last.rawText = `${last.rawText || last.text.slice(0, -(segment.text.length + 1))} ${segment.rawText || segment.text}`;
@@ -36,8 +35,9 @@ export function phraseSegments(segments: Segment[]): Segment[] {
 export function speechWindow(segments: Segment[], index: number, duration: number) {
   const segment = segments[index];
   const boundary = Math.min(duration, segments[index + 1]?.start ?? duration);
-  // Borrow at most 750 ms of silence, never another speaker's/segment's window.
-  return Math.max(0, Math.min(segment.end + 0.75, boundary) - segment.start);
+  // Use the available pause before the next segment (including trailing
+  // silence) before changing tempo. Never cross the next speech onset/file end.
+  return Math.max(0, boundary - segment.start);
 }
 export function safeChunkPlan(duration: number, maximum: number, silences: number[]) {
   if (!(duration > 0 && maximum >= 10 && Number.isFinite(duration + maximum))) throw new AppError("Ogiltig ASR-chunklängd.", 422);
@@ -74,12 +74,12 @@ async function persistExports(job: Job) {
   const dir = jobDir(job.id);
   for (const target of job.options.targets) {
     const translations = job.translations[target];
-    if (!translations || job.segments.some((s) => !translations.some((t) => t.id === s.id))) continue;
+    if (!translations || job.segments.some((s) => !translations.some((t) => t.id === s.id && t.text && !t.reviewRequired))) continue;
     await writeFile(path.join(dir, `${target}.srt`), subtitles(job.segments, translations, "srt"));
     await writeFile(path.join(dir, `${target}.vtt`), subtitles(job.segments, translations, "vtt"));
     const lookup = new Map(translations.map((t) => [t.id, t]));
     await writeFile(path.join(dir, `${target}.txt`), job.segments.map((s) => `[${s.start.toFixed(3)}–${s.end.toFixed(3)}] ${s.speaker}\nOriginal: ${s.text}\n${lookup.get(s.id)?.text || ""}`).join("\n\n"));
-    await atomicJson(path.join(dir, `${target}.json`), { sourceLanguage: job.detectedLanguage, targetLanguage: target, aiGenerated: true, segments: job.segments.map((s) => ({ ...s, translation: lookup.get(s.id) })), metrics: job.metrics, warnings: job.warnings });
+    await atomicJson(path.join(dir, `${target}.json`), { sourceLanguage: job.detectedLanguage, targetLanguage: target, translationMode: job.options.translationMode || "faithful", aiGenerated: true, rawSegments: job.rawSegments, sourceEdits: job.sourceEdits || [], segments: job.segments.map((s) => ({ ...s, translation: lookup.get(s.id) })), metrics: job.metrics, warnings: job.warnings });
   }
 }
 export async function runJob(id: string, externalSignal?: AbortSignal) {
@@ -101,33 +101,18 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
     if (!job.media) {
       const media = await inspect(original, signal, job.extension);
       if (media.duration > durationLimit()) throw new AppError(`Filen är längre än gränsen ${durationLimit()} sekunder.`, 413);
-      await enforceQuota(media.duration * (32000 + job.options.targets.length * 288000 + (job.options.preserveBackground ? 384000 : 0)) + (media.video ? (await stat(original)).size * job.options.targets.length : 0));
+      await enforceQuota(media.duration * (32000 + job.options.targets.length * 288000 + (job.options.preserveBackground ? 384000 : 0)) + (media.video ? (await stat(original)).size * (job.options.targets.length + 1) : 0));
       await normalize(original, normalized, signal, durationLimit(), job.extension);
       const wave = await waveform(normalized, dir, signal, media.duration);
       job = await updateJob(id, (j) => { j.media = { ...media, waveform: wave }; });
     }
     if (!(await exists(normalized))) await normalize(original, normalized, signal, durationLimit(), job.extension);
     const duration = job.media!.duration;
-    const asrDuration = Math.min(duration, (await inspect(normalized, signal)).duration);
-    if (job.media!.video && !job.segments.length && !job.sourceContext) {
-      const frames: string[] = [];
-      try {
-        await step("transcribing", "Läser lokal bildkontext för ord och samtalsämne.");
-        for (const [i, time] of [Math.min(0.5, duration / 4), duration / 2].entries()) {
-          const frame = path.join(dir, `context-${i}.jpg`);
-          await ffmpeg(["-ss", String(time), ...inputArgs(original), "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=640:-2", frame], signal);
-          frames.push(frame);
-        }
-        const detail = path.join(dir, 'context-detail.jpg');
-        await ffmpeg(["-ss", String(Math.min(0.5, duration / 4)), ...inputArgs(original), "-map", "0:v:0", "-frames:v", "1", "-vf", "crop=iw*0.6:ih*0.5:iw*0.2:ih*0.2,scale=640:-2", detail], signal);
-        frames.push(detail);
-        const sourceContext = await describeVideo(frames, signal);
-        if (sourceContext) job = await updateJob(id, (j) => { j.sourceContext = sourceContext; });
-      } catch (error) {
-        if (signal.aborted) throw error;
-        job = await updateJob(id, (j) => { j.warnings = [...new Set([...j.warnings, "Lokal bildkontext kunde inte läsas. Översättningen använder ljudet och samtalets text."])]; });
-      } finally { for (const frame of frames) await rm(frame, { force: true }); }
+    if (job.media!.video && !(await exists(path.join(dir, "source-preview.mp4")))) {
+      await step("transcribing", "Förbereder originalvideon för uppspelning i webbläsaren.");
+      await renderVideo(original, undefined, path.join(dir, "source-preview.mp4"), duration, signal);
     }
+    const asrDuration = Math.min(duration, (await inspect(normalized, signal)).duration);
     if (!job.segments.length) {
       const all: Segment[] = []; const languages: string[] = []; const languageScores = new Map<string, number>(); const languageConfidences: number[] = [];
       const partSeconds = Math.max(10, Math.min(120, Number(process.env.STUDIO_ASR_CHUNK_SECONDS) || 60));
@@ -135,10 +120,10 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       for (const [chunkIndex, current] of chunks.entries()) {
         const { start, duration: partDuration, hardBoundary } = current;
         signal.throwIfAborted(); await step("transcribing", `Transkriberar ${Math.floor(start)}–${Math.ceil(start + partDuration)} s av ${Math.ceil(duration)} s.`);
-        const asrVersion = hash(JSON.stringify([process.env.WHISPER_MODEL, job.options.source, "vad-word-confidence-silence-chunk-v5"]));
+        const asrVersion = hash(JSON.stringify([process.env.WHISPER_MODEL, job.options.source, "acoustic-only-raw-codeswitch-v6"]));
         const cache = path.join(dir, `asr-${start}-${partDuration}-${asrVersion}.json`); let data: Awaited<ReturnType<typeof transcribe>>;
         if (await exists(cache)) data = JSON.parse(await readFile(cache, "utf8"));
-        else { const part = path.join(dir, "asr-current.wav"); await chunk(normalized, part, start, partDuration, signal); data = await transcribe(part, job.options.source, signal, job.sourceContext?.arabicKeywords); await atomicJson(cache, data); await rm(part, { force: true }); }
+        else { const part = path.join(dir, "asr-current.wav"); await chunk(normalized, part, start, partDuration, signal); data = await transcribe(part, job.options.source, signal); await atomicJson(cache, data); await rm(part, { force: true }); }
         // A high no-speech score can also be faint real speech. Keep its words
         // for human review instead of silently deleting them from the dub.
         const speechSegments = data.segments.filter((s) => s.text.trim());
@@ -148,7 +133,7 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
           if (s.end <= s.start || s.start >= partDuration || s.end > partDuration + 1) throw new AppError("ASR gav tidsstämplar utanför ljudet.", 502);
           const words = (s.words || data.words?.filter((w) => w.start >= s.start && w.end <= s.end))?.filter((w) => w.end > w.start && w.start >= 0 && w.end <= s.end + 0.1).map(({ raw_word, ...w }) => ({ ...w, ...(raw_word ? { rawWord: raw_word } : {}), start: w.start + start, end: Math.min(duration, w.end + start) }));
           const boundarySpeech = hardBoundary && s.end > partDuration - 0.15 || chunks[chunkIndex - 1]?.hardBoundary && s.start < 0.15;
-          all.push({ id: `s${all.length + 1}`, start: s.start + start, end: Math.min(duration, start + partDuration, s.end + start), text: s.text.trim(), rawText: s.raw_text, speaker: "unknown", uncertain: s.uncertain || boundarySpeech || (s.avg_logprob !== undefined && s.avg_logprob < -0.8) || (s.no_speech_prob !== undefined && s.no_speech_prob > 0.55) || words?.some((w) => w.uncertain || (w.probability !== undefined && w.probability < 0.5)) || (data.language_probability !== undefined && data.language_probability < 0.6), qualityReasons: [...(s.quality_reasons || []), ...(boundarySpeech ? ["speech_at_chunk_boundary"] : []), ...(s.no_speech_prob !== undefined && s.no_speech_prob > 0.55 ? ["possible_background_noise_or_silence"] : [])], confidence: s.confidence ?? (s.avg_logprob !== undefined ? Math.min(1, Math.exp(s.avg_logprob)) : undefined), words });
+          all.push({ id: `s${all.length + 1}`, start: s.start + start, end: Math.min(duration, start + partDuration, s.end + start), text: s.text.trim(), rawText: s.raw_text ?? s.text, codeSwitch: s.code_switch || (/\p{Script=Arabic}/u.test(s.text) && /[a-zA-Z]/u.test(s.text)), speaker: "unknown", uncertain: s.uncertain || boundarySpeech || (s.avg_logprob !== undefined && s.avg_logprob < -0.8) || (s.no_speech_prob !== undefined && s.no_speech_prob > 0.55) || words?.some((w) => w.uncertain || (w.probability !== undefined && w.probability < 0.5)) || (data.language_probability !== undefined && data.language_probability < 0.6), qualityReasons: [...(s.quality_reasons || []), ...(boundarySpeech ? ["speech_at_chunk_boundary"] : []), ...(s.no_speech_prob !== undefined && s.no_speech_prob > 0.55 ? ["possible_background_noise_or_silence"] : [])], confidence: s.confidence ?? (s.avg_logprob !== undefined ? Math.min(1, Math.exp(s.avg_logprob)) : undefined), words });
           const acousticSegment = all.at(-1)!;
           if (hasDiscontinuousWordTimestamps(acousticSegment)) {
             acousticSegment.uncertain = true;
@@ -168,12 +153,13 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       }
       if (segments.length > 6000) throw new AppError("Talaridentifieringen gav fler än 6 000 segment. Dela upp filen.", 413);
       job = await updateJob(id, (j) => {
+        j.rawSegments = structuredClone(all);
         j.segments = phraseSegments(segments); j.detectedLanguage = job.options.source === "auto" ? [...languageScores].sort((a, b) => b[1] - a[1])[0]?.[0] || "okänt" : job.options.source;
+        for (const s of j.segments) s.rawText ??= s.text;
         if (j.segments.some((s) => s.uncertain)) j.sourceReviewed = false;
         if (languageConfidences.length) j.sourceConfidence = Math.min(...languageConfidences);
         if (new Set(languages).size > 1) j.warnings.push("Flera källspråk identifierades i olika delar av filen.");
         if (!job.options.diarize) j.warnings.push("Talaridentifiering är avstängd. Okända talare använder samma standardröst.");
-        if (segments.some((s) => s.rawText)) j.warnings.push("Arabisk stavning/böjning har språkgranskats automatiskt. Råtranskript finns i JSON-exporten; rättningarna är språkliga bedömningar.");
         if (segments.some((s) => s.uncertain)) j.warnings.push("Osäkra eller överlappande segment finns. Granska transkript och talaridentiteter.");
       });
     }
@@ -185,25 +171,30 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
           // High decoder probability is not confidence in VAD-restored timing.
           // Preserve the acoustic timestamps; a person must review alignment.
           segment.uncertain = true;
+          segment.reviewedAt = undefined;
           segment.qualityReasons = [...new Set([...(segment.qualityReasons || []), "discontinuous_word_timestamps"])];
         }
         j.sourceReviewed = false;
         j.warnings = [...new Set([...j.warnings, "Ordtidsstämplar innehåller ovanligt långa luckor inom en replik. Granska segmentets verkliga start och slut före dubbning."])];
       });
     }
-    if (job.segments.some((s) => s.uncertain) && !job.sourceReviewed) {
-      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = "source"; j.outputs = {}; j.message = "Transkriptet innehåller osäkert tal. Granska ord och tidsstämplar och godkänn källtexten före översättning och dubbning."; });
-      return;
-    }
+    const pendingSource = new Set(pendingSourceSegments(job).map((s) => s.id));
+    const translationIssues: string[] = [];
     for (const target of job.options.targets) {
       const done = new Map((job.translations[target] || []).map((t) => [t.id, t]));
-      for (let i = 0; i < job.segments.length; i += 6) {
-        const pending = job.segments.slice(i, i + 6).filter((s) => !done.has(s.id));
+      for (let i = 0; i < job.segments.length; i++) {
+        const pending = job.segments.slice(i, i + 1).filter((s) => !pendingSource.has(s.id) && (!done.has(s.id) || done.get(s.id)?.reviewRequired));
         if (!pending.length) continue;
         await step("translating", `Översätter till ${target}: segment ${i + 1} av ${job.segments.length}.`);
-        const context = `Visual context (vocabulary only, never invent spoken facts):\n${job.sourceContext?.context || ""}\nWhole conversation (context only):\n${job.segments.map((s) => s.text).join("\n").slice(0, 3500)}\nEarlier source:\n${job.segments.slice(Math.max(0, i - 4), i).map((s) => s.text).join("\n")}\nFollowing source (context only):\n${job.segments.slice(i + 6, i + 10).map((s) => s.text).join("\n")}`;
-        const translated = await translate(pending, target, job.options, context, signal);
-        for (const t of translated) done.set(t.id, t);
+        const context = job.segments.slice(Math.max(0, i - 4), i).filter((s) => !pendingSource.has(s.id)).map((s) => s.text).join("\n");
+        try {
+          const translated = await translate(pending, target, { ...job.options, source: job.detectedLanguage || job.options.source }, context, signal);
+          for (const t of translated) done.set(t.id, t);
+        } catch (error) {
+          if (!(error instanceof TranslationIntegrityError)) throw error;
+          translationIssues.push(pending[0].id);
+          done.set(pending[0].id, { id: pending[0].id, text: error.drafts?.find((t) => t.id === pending[0].id)?.text || "", reviewRequired: true, reviewMessage: error.message });
+        }
         job = await updateJob(id, (j) => { j.translations[target] = j.segments.flatMap((s) => done.has(s.id) ? [done.get(s.id)!] : []); });
       }
     }
@@ -226,7 +217,8 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       for (const target of job.options.targets) {
         speechFiles[target] = [];
         for (let i = 0; i < job.segments.length; i++) {
-          const segment = job.segments[i]; const translated = job.translations[target][i];
+          const segment = job.segments[i]; const translated = job.translations[target]?.find((t) => t.id === segment.id);
+          if (pendingSource.has(segment.id) || !translated || translated.reviewRequired) continue;
           await step("generating", `Genererar AI-röst (${target}), segment ${i + 1} av ${job.segments.length}.`);
           const voice = resolveVoice(target, job.options, caps, segment.speaker, speakers.indexOf(segment.speaker));
           let reference: string | undefined;
@@ -237,7 +229,7 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
             if (!(await exists(reference))) await chunk(normalized, reference, sample.start, Math.min(12, sample.end - sample.start), signal);
           }
           async function generate(t: Translation) {
-            const file = path.join(dir, `speech-${hash(JSON.stringify([target, job.options.englishLocale || "en-US", t.text, voice, caps.tts, reference ? hash(await readFile(reference).then((v) => v.toString("base64"))) : "", process.env.MMS_SEED || "555", "trim-edges-locale-v6"]))}.wav`);
+            const file = path.join(dir, `speech-${hash(JSON.stringify([target, job.options.englishLocale || "en-US", t.text, t.generation || 0, voice, caps.tts, reference ? hash(await readFile(reference).then((v) => v.toString("base64"))) : "", process.env.MMS_SEED || "555", "trim-edges-locale-v6"]))}.wav`);
             if (!(await exists(file))) { const bytes = await synthesize(t.text, target, voice, signal, reference, job.options); await writeFile(file, bytes); }
             try {
               const trimmed = `${file}.trim.wav`;
@@ -246,39 +238,25 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
             }
             catch (error) { if (!signal.aborted) { await rm(file, { force: true }); await rm(`${file}.trim.wav`, { force: true }); } throw error; }
           }
-          const window = speechWindow(job.segments, i, duration); const fullText = translated.text;
+          const window = speechWindow(job.segments, i, duration);
           if (window <= 0) throw new AppError(`Segment ${segment.id} saknar ett eget tidsfönster. Justera överlappande tidsstämplar.`, 422);
-          let generated = await generate(translated); let timing = timingPlan(generated.duration, window, 1.2, job.options.speechRate || 1); let attempts = 0;
-          const tried = new Set([translated.text]);
-          for (; timing.review && attempts < 3; attempts++) {
-            const count = translated.text.split(/\s+/).filter(Boolean).length;
-            const maxWords = Math.max(1, Math.floor(count * window * 1.16 / generated.duration) - attempts);
-            const context = `Visual context (vocabulary only):\n${job.sourceContext?.context || ""}\nSurrounding source (context only):\n${job.segments.slice(Math.max(0, i - 2), i + 3).map((s) => s.text).join("\n")}\nFull target translation to shorten without changing its meaning:\n${fullText}\nCurrent wording (${generated.duration.toFixed(2)} seconds of measured speech):\n${translated.text}`;
-            let concise: Awaited<ReturnType<typeof translate>>;
-            try { concise = await translate([segment], target, job.options, context, signal, true, { maxWords, measuredSeconds: generated.duration, availableSeconds: window }); }
-            catch (error) { if (error instanceof TranslationIntegrityError) continue; throw error; }
-            if (tried.has(concise[0].text)) continue;
-            tried.add(concise[0].text);
-            if (!shorteningPreservesAnchors(fullText, concise[0].text, target).ok) continue;
-            const candidate = await generate(concise[0]);
-            if (candidate.duration < generated.duration) { translated.text = concise[0].text; generated = candidate; timing = timingPlan(generated.duration, window, 1.2, job.options.speechRate || 1); }
-          }
-          // A slow TTS voice may tolerate more compression at a normal spoken
-          // word rate. Prefer faithful concise speech at <=1.2; only then allow
-          // <=1.4, and never pack more than 180 words/minute into the window.
-          if (timing.review && translated.text.split(/\s+/).filter(Boolean).length / window * 60 <= 180) timing = timingPlan(generated.duration, window, 1.4, job.options.speechRate || 1);
-          timing.attempts = attempts; timing.borrowedSeconds = Math.max(0, window - (segment.end - segment.start));
-          translated.timing = timing; speechFiles[target].push(generated.file);
+          const generated = await generate(translated); const timing = timingPlan(generated.duration, window, 1.2, job.options.speechRate || 1);
+          timing.attempts = 0; timing.borrowedSeconds = Math.max(0, window - (segment.end - segment.start));
+          translated.timing = timing; speechFiles[target][i] = generated.file;
           if (timing.review) review++;
           maxDeviation = Math.max(maxDeviation, timing.deviationMs);
-          job = await updateJob(id, (j) => { j.translations[target] = job.translations[target]; });
+          job = await updateJob(id, (j) => { j.translations[target] = job.translations[target]; ((j.segmentOutputs ??= {})[target] ??= {})[segment.id] = { file: path.basename(generated.file), text: translated.text }; });
         }
       }
     }
     job = await updateJob(id, (j) => { j.metrics.reviewSegments = review; j.metrics.syncMaxDeviationMs = maxDeviation; });
     await persistExports(job);
+    if (pendingSource.size || translationIssues.length) {
+      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = pendingSource.size ? "source" : "translation"; j.outputs = {}; j.message = pendingSource.size ? `${pendingSource.size} källsegment behöver granskas. Tillförlitliga segment är bearbetade; lyssna och godkänn de markerade segmenten.` : `Översättningen av ${[...new Set(translationIssues)].join(", ")} behöver granskas. Rätta texten och spara före export.`; });
+      return;
+    }
     if (review) {
-      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = "timing"; j.message = `${review} segment ryms inte med naturligt tempo. Förkorta texten eller justera tidsfönstret och återuppta.`; j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json"]])); });
+      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = "timing"; j.message = `${review} segment ryms inte med naturligt tempo. Justera tidsfönstret eller granska formuleringen utan att ta bort innehåll. Hela texten finns kvar.`; j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json"]])); });
       return;
     }
     for (const target of job.options.targets) {
@@ -288,7 +266,7 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
         for (let i = 0; i < job.segments.length; i++) {
           signal.throwIfAborted();
           const window = speechWindow(job.segments, i, duration); const translated = job.translations[target][i]; const timing = translated.timing!;
-          const maxTempo = translated.text.split(/\s+/).filter(Boolean).length / window * 60 <= 180 ? 1.4 : 1.2;
+          const maxTempo = 1.2;
           let overflow: SpeechWindowError | undefined;
           for (let attempt = 0; attempt < 3; attempt++) {
             try { await placeSpeech(timeline, speechFiles[target][i], job.segments[i].start, timing.tempo, dir, signal, window); overflow = undefined; break; }
@@ -325,6 +303,7 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
         await step("exporting", `Exporterar MP4 med ${job.options.mode === "subtitles" ? "originalljud" : "översatt tal"} (${target}).`);
         await renderVideo(original, job.options.mode === "subtitles" ? undefined : path.join(dir, `${target}.wav`), path.join(dir, `${target}.mp4`), duration, signal, job.options.mode === "subtitles" ? { file: path.join(dir, `${target}.srt`), language: target } : undefined);
       }
+      for (const format of [...(job.options.mode !== "subtitles" ? ["wav", "mp3", "m4a"] : []), ...(job.media!.video ? ["mp4"] : [])]) await verifyExport(path.join(dir, `${target}.${format}`), duration, signal, job.options.mode !== "subtitles");
     }
     signal.throwIfAborted();
     await updateJob(id, (j) => {

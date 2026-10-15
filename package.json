@@ -28,7 +28,8 @@
     "test:translation:live": "node --env-file-if-exists=.env.local --import tsx scripts/translation-live-check.ts",
     "test:translation:local": "node --env-file-if-exists=.env.local --import tsx scripts/translation-local-check.ts",
     "test:translation:ui": "node --import tsx scripts/translation-ui-check.mjs",
-    "lint": "eslint src/lib/translation src/components/translation-*.tsx src/app/translation src/app/api/translation scripts/translation-worker.ts scripts/translation-live-check.ts scripts/translation-local-check.ts"
+    "lint": "eslint src/lib/translation src/components/translation-*.tsx src/app/translation src/app/api/translation scripts/translation-worker.ts scripts/translation-live-check.ts scripts/translation-local-check.ts scripts/review-asr-comparison.ts scripts/translation-fidelity-check.ts",
+    "test:translation:fidelity": "node --env-file-if-exists=.env.local --import tsx scripts/translation-fidelity-check.ts"
   },
   "dependencies": {
     "@ffmpeg/core": "0.12.10",

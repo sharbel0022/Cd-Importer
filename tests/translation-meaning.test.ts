@@ -94,3 +94,8 @@ describe("English translation fact anchors", () => {
     expect(translationPreservesFacts(source, target, sourceLanguage, targetLanguage)).toEqual({ ok: true, missing: [] });
   });
 });
+
+it("keeps the source mile unit rather than the different Swedish mil", () => {
+  expect(translationPreservesFacts("thousands of miles away", "tusentals mil bort", "en", "sv").missing).toContain("enhet:mile");
+  expect(translationPreservesFacts("thousands of miles away", "tusentals engelska mil bort", "en", "sv").ok).toBe(true);
+});

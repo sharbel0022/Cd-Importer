@@ -152,13 +152,25 @@ export async function renderVideo(original: string, audio: string | undefined, o
   const args = [...inputArgs(original)];
   if (audio) args.push(...inputArgs(audio));
   if (subtitle) args.push("-protocol_whitelist", "file,pipe", "-f", "srt", "-i", subtitle.file);
-  // Stream copy preserves original resolution, fps and bitstream. If MP4 cannot
-  // contain the source codec, fail honestly instead of silently reducing quality.
-  args.push("-map", "0:v:0", "-map", audio ? "1:a:0" : "0:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k");
+  const diagnostic = await ffmpeg([...inputArgs(original), "-map", "0:v:0", "-t", "0", "-f", "null", "-"], signal, 30_000);
+  // Keep compatible H.264 bitstreams. Other source codecs/pixel formats are
+  // encoded as H.264 4:2:0 for HTML5 playback; the uploaded file is untouched.
+  const copy = /Video: h264[^\r\n]*, yuv420p[ (,]/u.test(diagnostic);
+  args.push("-map", "0:v:0", "-map", audio ? "1:a:0" : "0:a:0", "-c:v", copy ? "copy" : "libx264");
+  if (!copy) args.push("-preset", "fast", "-crf", "18", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p");
+  args.push("-c:a", "aac", "-b:a", "192k");
   if (subtitle) args.push("-map", `${audio ? 2 : 1}:s:0`, "-c:s", "mov_text", "-disposition:s:0", "default", "-metadata:s:s:0", `language=${({ en: "eng", sv: "swe", ar: "ara" } as Record<string, string>)[subtitle.language] || "und"}`);
   args.push("-t", String(duration), "-movflags", "+faststart", "-map_metadata", "-1", output);
   await ffmpeg(args, signal);
   if (!(await stat(output)).size) throw new AppError("Videoexporten är tom.", 502);
   const rendered = await inspect(output, signal, "mp4");
   if (!rendered.video || Math.abs(rendered.duration - duration) > 0.08) throw new AppError("MP4-exportens längd avviker från originalet. Ingen godkänd video publicerades.", 502);
+}
+export async function verifyExport(file: string, duration: number, signal: AbortSignal, audible = true) {
+  if ((await stat(file)).size < 100) throw new AppError("Exporten är tom eller ofullständig.", 502);
+  const media = await inspect(file, signal);
+  if (Math.abs(media.duration - duration) > 0.12) throw new AppError("Exportens längd avviker från originalet.", 502);
+  await ffmpeg(["-v", "error", "-xerror", ...inputArgs(file), "-map", "0:a:0", "-f", "null", "-"], signal);
+  if (audible) await speechDuration(file, signal);
+  return media;
 }

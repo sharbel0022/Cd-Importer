@@ -55,7 +55,9 @@ Den lokala Next.js-versionen har nu en separat översättningsstudio på `/trans
 
 På den lokalt verifierade datorn är modeller nu installerade. Se [starta den lokala AI-kedjan](docs/local-ai-setup.md) och [riktigt arabiskt→svenskt talprov med exporter](docs/local-ai-verification.md). Modellvikterna och den privata konfigurationen ingår inte i Git.
 
-Studion väljer nu **English (US)** som standard, med UK-variant, riktiga röstprov, taltempo, jämförelsespelare och granskning av osäkra transkript. Se [den aktuella engelska verifieringen och Windows-kommandon](docs/english-translation-verification.md) för verkliga exporter, genomförda rättningar och kvarstående kvalitetsgränser. WhatsApp-videon ligger kvar för granskning enligt användarens val.
+Studion använder nu **Faithful Translation** och **English (US)** som standard. Inga grammatikregler skriver om ASR, och timing förkortar aldrig översättningen. Osäkra segment kan spelas upp, rättas och godkännas separat, med sparad råtext och ändringshistorik. Förhandsvisningen spelar den faktiska exporterade MP3/MP4-filen. Se [aktuell verifiering](docs/faithful-translation-verification.md).
+
+Studion erbjuder även English (UK), riktiga röstprov, taltempo, jämförelsespelare och granskning av osäkra transkript. Se [den aktuella engelska verifieringen och Windows-kommandon](docs/english-translation-verification.md) för verkliga exporter, genomförda rättningar och kvarstående kvalitetsgränser. WhatsApp-videon ligger kvar för granskning enligt användarens val.
 
 ## CD Importer Studio (ljud och noter)
 

@@ -2,13 +2,21 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { capabilities, providerFetch, resolveVoice, synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
+import { capabilities, providerFetch, repeatedSpeech, resolveVoice, synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
 import { optionsSchema } from "@/lib/translation/types";
 import { wavBlob } from "@/lib/translation/client";
 let dir: string;
 beforeEach(async () => { dir = await mkdtemp(path.join(os.tmpdir(), "cd-provider-")); vi.stubEnv("OPENAI_API_KEY", "secret-test-key"); vi.stubEnv("STUDIO_ASR_PROVIDER", "openai"); vi.stubEnv("STUDIO_TRANSLATION_PROVIDER", "openai"); vi.stubEnv("STUDIO_TTS_PROVIDER", "openai"); });
 afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); await rm(dir, { recursive: true, force: true }); });
 const options = () => optionsSchema.parse({ targets: ["sv"], rights: true, cloudConsent: true });
+it("detects likely decoder loops while preserving short real repetitions", () => {
+  expect(repeatedSpeech("ايش قد ممكن ".repeat(20))).toBe(true);
+  expect(repeatedSpeech("3 أبطال 3 أبطال 3 أبطال")).toBe(false);
+});
+it("does not approve turning a spoken cardinal into an ordinal to repair grammar", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: "Subtropical storm Jerry is the tenth named storm." }] }) } }] })));
+  await expect(translate([{ id: "s1", start: 0, end: 8, text: "عشر عاصفة مسماة العاصفة شبه الاستوائية جيري", speaker: "A" }], "en", { ...options(), source: "ar" }, "", new AbortController().signal)).rejects.toThrow(/stormklassificering/);
+});
 it("exposes configuration without leaking credentials and requires cloud consent", async () => {
   const caps = await capabilities(); expect(caps.ready).toBe(true); expect(JSON.stringify(caps)).not.toContain("secret-test-key");
   await expect(validateOptions({ ...options(), cloudConsent: false })).rejects.toThrow(/Godkänn/);
@@ -149,4 +157,22 @@ it("never falls back to a weather draft that passes terminology but changes the 
   const reply = (text: string) => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text }] }) } }] });
   vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(draft)).mockImplementation(async () => reply(bad)));
   await expect(translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية جيري العاشرة من العواصف المسماة في موسم الأطلسي", speaker: "A" }], "en", options(), "", new AbortController().signal)).rejects.toThrow(/stormklassificering/);
+});
+
+it.each(["faithful", "natural"] as const)("preserves mistaken facts, negation, tense and self-correction in %s mode", async (translationMode) => {
+  const phrases = [
+    ["Barcelona فاز بخمسة مباريات", "Barcelona won five matches"],
+    ["لديه ثلاثة أرجل", "He has three legs"],
+    ["لن أسافر غدا", "I will not travel tomorrow"],
+    ["ثلاثة لا أربعة", "Three, no, four"],
+  ];
+  for (const [source, target] of phrases) {
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      const messages = JSON.parse(init.body).messages;
+      expect(messages[0].content).toContain("Never fact-check or silently correct the speaker");
+      expect(messages[0].content).toContain(`Translation mode: ${translationMode}`);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: target }] }) } }] });
+    }));
+    expect(await translate([{ id: "s1", start: 0, end: 4, text: source, speaker: "A" }], "en", { ...options(), source: "ar", translationMode }, "", new AbortController().signal)).toEqual([{ id: "s1", text: target }]);
+  }
 });

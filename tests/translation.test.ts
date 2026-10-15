@@ -37,7 +37,7 @@ describe("translation validation and synchronization", () => {
     expect(phrases).toHaveLength(3); expect(phrases[0].text).toBe("Imagine being there yesterday.");
     expect(segments[0].text).toBe("Imagine");
     expect(speechWindow(phrases, 0, 10)).toBe(3.2);
-    expect(speechWindow(phrases, 1, 10)).toBeCloseTo(1.55);
+    expect(speechWindow(phrases, 1, 10)).toBeCloseTo(2.3);
     expect(speechWindow(phrases, 2, 7.2)).toBeCloseTo(1.7);
     expect(speechWindow([{ ...segments[0], start: 0, end: 2 }, { ...segments[1], start: 1, end: 3 }], 0, 3)).toBe(1);
   });

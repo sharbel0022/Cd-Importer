@@ -2,7 +2,7 @@
 
 ## Status och verifiering
 
-Engelska (US) är nu standard. Aktuella kodändringar, installerade engelska röster och separat verklig verifiering redovisas i [English-priority verification](english-translation-verification.md). Tidigare svenska prov nedan är historiska; de är inget godkännande av nya modeller eller WhatsApp-videon.
+Engelska (US) är nu standard. Aktuell implementation och verkliga testresultat finns i [Faithful translation verification](faithful-translation-verification.md). Äldre resultat finns i [English-priority verification](english-translation-verification.md). Tidigare svenska prov nedan är historiska; de är inget godkännande av nya modeller eller WhatsApp-videon.
 
 Studion är en riktig implementation av ingestion, provideranrop, tidsatta segment, talgenerering, synkronisering och export. Den körs i **lokala Next.js-versionen**, på `/translation`. Befintlig musikhantering, CD-konvertering, inspelning och notredigering finns kvar. Inventeringen före kodändring finns i [translation-architecture.md](translation-architecture.md).
 
@@ -28,11 +28,11 @@ npm.cmd run studio:worker
 Öppna `http://127.0.0.1:3000/translation`, eller välj **AI Translation Studio** i appens meny. Båda processerna måste startas om efter ändrad konfiguration. För produktion: `npm.cmd run build`, därefter `npm.cmd start`, plus workern i en separat terminal. Projektet använder Next.js dokumenterade `--webpack` för att undvika ett reproducerbart Turbopack-underprocessfel på denna Windows-installation.
 
 1. Välj automatisk detektion eller källspråk samt ett till tre målspråk.
-2. Välj stil, AI-röst, ljudläge och eventuell talaridentifiering.
+2. Välj Faithful Translation (standard) eller Natural Translation, AI-röst, ljudläge och eventuell talaridentifiering. Inget läge får rätta talarens fakta.
 3. Bekräfta dina rättigheter och, i molnläge, att ljud/text skickas till OpenAI.
 4. Dra in en fil, välj fil eller spela in mikrofonen. Starta översättningen.
 5. Följ statusen. Jobbet fortsätter när webbläsaren stängs, så länge workern körs.
-6. Pausa innan redigering. Ändra originaltext, översättning, start/sluttid, talar-ID och röstmappning. **Spara**, sedan **Återuppta**, genererar uppdaterade exporter.
+6. Granska och godkänn osäkra källsegment separat. Tillförlitliga segment bearbetas under tiden; komplett dubbning kräver att alla källsegment är granskade. Lyssna på originalsegment, osäkra ord och genererade segment. Rå ASR och ändringshistorik visas separat. Pausa innan redigering. Ändra originaltext, översättning, start/sluttid, talar-ID och röstmappning. **Spara**, sedan **Återuppta**, genererar uppdaterade exporter.
 7. Växla original/AI-tal vid samma tidsposition. Granska särskilt osäkra segment. Hämta exporter du vill behålla.
 
 ## Providers och faktiska språkgränser
@@ -91,7 +91,7 @@ Valbar pyannote kräver installerat `pyannote.audio`, `PYANNOTE_MODEL` och event
 
 Långa källor transkriberas i diskbaserade block, normalt omkring 60 sekunder (konfigurerbart 10–120 sekunder). Workern söker en närliggande tyst gräns; en ofrånkomlig gräns i tal markeras för granskning. Orimliga mellanrum i ordtider markeras även när ordsannolikheterna är höga. Whisper skapar segment och ordtider; dessa är modellskattningar och måste granskas när de flaggas. En översättning per ID valideras. Talare och tidsfönster kommer från serverns sparade segment.
 
-TTS-ljudet avkodas och mäts. Tyst eller ogiltigt WAV-ljud avvisas. För lång text får upp till tre faktakontrollerade förkortningsförsök. FFmpeg `atempo` föredrar **0,85–1,20×**; en begränsad reserv upp till 1,40× tillåts bara inom ordtäthetsgränsen. Den verkliga samplelängden kontrolleras innan tal skrivs till tidslinjen. Tal som inte ryms utan överlappning eller avklippning ger granskning och saknar godkända slutexporter. SRT/VTT/TXT/JSON kan hämtas för rättning. Tempokontrollen är ingen garanti för studiokvalitet eller identisk intonation.
+TTS-ljudet avkodas och mäts. Tyst eller ogiltigt WAV-ljud avvisas. Ingen automatisk textförkortning körs. Tillgängliga pauser används fram till nästa segments start eller filens slut, med FFmpeg `atempo` inom **0,85–1,20×**. Den verkliga samplelängden kontrolleras innan tal skrivs till tidslinjen. Tal som inte ryms utan överlappning eller avklippning ger granskning och saknar godkända slutexporter. Hela texten och genererade segment finns kvar för granskning. Alla färdiga mediefiler kontrolleras för storlek, ljudström, längd, avkodning och hörbart tal. Kompatibel H.264 kopieras; andra videokodekar/pixelformat kodas till H.264 yuv420p med AAC för HTML5-uppspelning.
 
 Godkända segment placeras på absoluta 24 kHz-samplepositioner i ett diskbaserat floatspår. Pauser mellan segment lämnas kvar och fel ackumuleras inte genom concat. Hela mixen mäts före global loudness-normalisering mot −16 LUFS och limitering. Sampleklockan återställs och utdata får exakt originallängd före 48 kHz WAV, MP3 och M4A. Detta är ingen MOS-mätning av naturlighet.
 

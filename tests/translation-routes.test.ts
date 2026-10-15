@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PATCH } from "@/app/api/translation/jobs/[id]/route";
+import { GET as mediaFile } from "@/app/api/translation/jobs/[id]/file/route";
 import { atomicJson, jobDir, readJob } from "@/lib/translation/store";
 import { optionsSchema, type Job } from "@/lib/translation/types";
 
@@ -84,7 +85,7 @@ describe("translation job source review and corrections", () => {
     await atomicJson(path.join(jobDir(job.id), "job.json"), job);
     expect((await patch({ action: "edit", edits: [{ id: "s1", target: "en", text: "Welcome", start: 0, end: 3, speaker: "A" }] })).status).toBe(200);
     const next = await readJob(job.id);
-    expect(next.translations.en).toEqual([{ id: "s1", text: "Welcome" }, { id: "s2", text: "Thanks" }]);
+    expect(next.translations.en).toEqual([{ id: "s1", text: "Welcome", editedByUser: true }, { id: "s2", text: "Thanks" }]);
     expect(next.sourceReviewed).not.toBe(true);
     expect(next.reviewReason).toBe("source");
     expect((await patch({ action: "resume" })).status).toBe(409);
@@ -104,8 +105,41 @@ describe("translation job source review and corrections", () => {
     await atomicJson(path.join(jobDir(job.id), "job.json"), job);
     expect((await patch({ action: "edit", edits: [{ id: "s1", target: "en", original: "مرحبا بكم", text: "Welcome", start: 0, end: 3, speaker: "A" }] })).status).toBe(200);
     const next = await readJob(job.id);
-    expect(next.translations.en).toEqual([{ id: "s1", text: "Welcome" }]);
+    expect(next.translations.en).toEqual([{ id: "s1", text: "Welcome", editedByUser: true }]);
     expect(next.translations.sv).toEqual([{ id: "s2", text: "Tack" }]);
     expect(next).toMatchObject({ sourceReviewed: false, reviewReason: "source" });
   });
+  it("approves only selected uncertain source rows and rejects unknown IDs", async () => {
+    job.segments[1].uncertain = true;
+    await atomicJson(path.join(jobDir(job.id), "job.json"), job);
+    expect((await patch({ action: "approve-source", ids: ["s99"] })).status).toBe(409);
+    expect((await patch({ action: "approve-source", ids: ["s1"] })).status).toBe(200);
+    const next = await readJob(job.id);
+    expect(next.sourceReviewed).toBe(false); expect(next.segments[0].reviewedAt).toBeTruthy(); expect(next.segments[1].reviewedAt).toBeUndefined();
+  });
+  it("retains immutable raw ASR and an audit trail while revoking corrected audio", async () => {
+    job.segmentOutputs = { en: { s1: { file: "old.wav", text: "Hello" }, s2: { file: "other.wav", text: "Thanks" } }, sv: { s1: { file: "old-sv.wav", text: "Hej" } } };
+    await atomicJson(path.join(jobDir(job.id), "job.json"), job);
+    expect((await patch({ action: "edit", edits: [{ id: "s1", target: "en", original: "ثلاثة لا أربعة", text: "Hello", start: 0, end: 3, speaker: "A" }] })).status).toBe(200);
+    const next = await readJob(job.id);
+    expect(next.rawSegments?.[0].text).toBe("مرحبا"); expect(next.segments[0].rawText).toBe("مرحبا");
+    expect(next.sourceEdits?.[0]).toMatchObject({ id: "s1", before: { text: "مرحبا" }, after: { text: "ثلاثة لا أربعة" } });
+    expect(next.segmentOutputs?.en.s1).toBeUndefined(); expect(next.segmentOutputs?.sv.s1).toBeUndefined(); expect(next.segmentOutputs?.en.s2).toBeDefined();
+  });
+  it("regenerates only selected reviewed translations and invalidates complete exports immediately", async () => {
+    job.sourceReviewed = true;
+    await atomicJson(path.join(jobDir(job.id), "job.json"), job);
+    expect((await patch({ action: "regenerate", target: "en", ids: ["s1"] })).status).toBe(200);
+    const next = await readJob(job.id);
+    expect(next).toMatchObject({ status: "queued", revision: 1, outputs: {} });
+    expect(next.translations.en[0].generation).toBe(1); expect(next.translations.en[1].generation).toBeUndefined();
+  });
+  it("rejects obsolete preview revisions and arbitrary segment paths before reading media", async () => {
+    const ctx = { params: Promise.resolve({ id: job.id }) };
+    expect((await mediaFile(new Request("http://localhost/file?target=en&format=mp4&revision=99"), ctx)).status).toBe(409);
+    job.sourceReviewed = true; job.segmentOutputs = { en: { s1: { file: "../../secret.wav", text: "Hello" } } };
+    await atomicJson(path.join(jobDir(job.id), "job.json"), job);
+    expect((await mediaFile(new Request("http://localhost/file?target=en&format=wav&segment=s1"), ctx)).status).toBe(404);
+  });
+
 });

@@ -59,7 +59,7 @@ async function uploadInBrowser(): Promise<Job> {
     await page.getByRole("checkbox", { name: "Jag har rätt att översätta och bearbeta detta material." }).check();
     await page.locator('input[type="file"]').setInputFiles(path.resolve(inputMedia));
     const uploaded = page.waitForResponse((r) => r.url() === `${origin}/api/translation/jobs` && r.request().method() === "POST");
-    await page.getByRole("button", { name: "Skapa översättning", exact: true }).click();
+    await page.getByRole("button", { name: "Översätt ljud / Translate Audio", exact: true }).click();
     const response = await uploaded; assert.equal(response.status(), 201);
     // The UI immediately navigates after upload; DevTools may evict that body.
     await page.waitForURL((url) => !!url.searchParams.get("job"));

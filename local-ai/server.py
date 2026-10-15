@@ -22,8 +22,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from asr_cleanup import restore_appositive_ordinals
-from asr_quality import mark_uncertainty, repetition_loop
+from asr_quality import mark_uncertainty
 from speech_text import speech_text
 import mms_voice
 
@@ -193,10 +192,10 @@ def transcribe_sync(file, language, context=""):
                 raise
             print("Whisper CUDA initialization failed; using CPU int8.", flush=True)
             whisper = WhisperModel(os.getenv("WHISPER_MODEL", "small"), device="cpu", compute_type="int8", cpu_threads=4)
-    # Retain context and allow Whisper's fallback decoding to escape loops.
-    # Visual context helps translation, never dictates acoustic recognition.
+    # Acoustic decoding alone resolves accents. No vocabulary prompts, visual
+    # hints, grammar rules or language models may replace the measured words.
     segments, info = whisper.transcribe(str(file), language=language or None, beam_size=5, temperature=(0, 0.2, 0.4, 0.6, 0.8, 1.0),
-                                      condition_on_previous_text=True, vad_filter=True, word_timestamps=True,
+                                      condition_on_previous_text=False, vad_filter=True, word_timestamps=True, multilingual=not bool(language),
                                       vad_parameters={'min_silence_duration_ms': 500, 'speech_pad_ms': 400},
                                       language_detection_segments=3)
     result = {"language": info.language, "language_probability": info.language_probability,
@@ -205,8 +204,6 @@ def transcribe_sync(file, language, context=""):
             "avg_logprob": s.avg_logprob, "no_speech_prob": s.no_speech_prob,
             "temperature": s.temperature, "compression_ratio": s.compression_ratio,
             "words": [{"start": w.start, "end": w.end, "word": w.word, "probability": w.probability} for w in (s.words or [])]} for s in segments]}
-    if repetition_loop(' '.join(s['text'] for s in result['segments'])):
-        raise HTTPException(422, 'Speech recognition repeated the same phrase implausibly. No translation was created; try clearer audio.')
     return mark_uncertainty(result)
 
 
@@ -221,11 +218,6 @@ async def transcribe(file: UploadFile = File(...), language: str = Form(""), con
                 result = await run_in_threadpool(transcribe_sync, source, language, context)
             except (ValueError, RuntimeError) as error:
                 raise HTTPException(422, 'Cannot decode/transcribe this media. Check the file, language and Whisper model.') from error
-            if result['language'] == 'ar' and result['segments']:
-                result = restore_appositive_ordinals(result)
-                # Never let a language model rewrite acoustic words, people
-                # or spelled-out quantities. Only the bounded rule above is
-                # allowed, and its raw acoustic text is retained explicitly.
             return result
     finally:
         shutil.rmtree(directory, ignore_errors=True)

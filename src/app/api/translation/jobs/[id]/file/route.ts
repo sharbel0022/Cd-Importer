@@ -10,10 +10,21 @@ const types: Record<string, string> = { mp3: "audio/mpeg", wav: "audio/wav", m4a
 export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await ctx.params; const job = await readJob(id); const query = new URL(request.url).searchParams;
-    const original = query.get("original") === "true"; const target = query.get("target") || ""; const format = original ? job.extension : query.get("format") || "";
-    if (!original && (!job.options.targets.includes(target) || !job.outputs[target]?.includes(format))) throw new AppError("Exporten är inte färdig eller finns inte.", 404);
-    const filename = original ? `original.${job.extension}` : `${target}.${format}`; const file = path.join(jobDir(id), filename); const info = await stat(file);
-    const headers: Record<string, string> = { "Content-Type": `${types[format] || "application/octet-stream"}${["txt", "json", "srt", "vtt"].includes(format) ? "; charset=utf-8" : ""}`, "Content-Length": String(info.size), "Cache-Control": "private, no-store", "Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff", "Content-Disposition": `${query.get("download") === "true" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(original ? job.name : `${path.basename(job.name, path.extname(job.name))}-${target}.${format}`)}` };
+    const original = query.get("original") === "true"; const target = query.get("target") || "";
+    const preview = original && query.get("preview") === "true" && !!job.media;
+    const previewFile = job.media?.video ? "source-preview.mp4" : "normalized.wav";
+    const previewReady = preview && await stat(path.join(jobDir(id), previewFile)).then((s) => s.size > 0).catch(() => false);
+    const format = previewReady ? job.media?.video ? "mp4" : "wav" : original ? job.extension : query.get("format") || "";
+    const segment = query.get("segment");
+    const clip = segment ? job.segmentOutputs?.[target]?.[segment] : undefined;
+    if (!original && query.has("revision") && query.get("revision") !== String(job.revision)) throw new AppError("Exporten har ersatts av en ny version. Ladda om jobbet.", 409);
+    if (segment) {
+      const source = job.segments.find((s) => s.id === segment); const translation = job.translations[target]?.find((t) => t.id === segment);
+      if (original || format !== "wav" || !job.options.targets.includes(target) || !source || !clip || !/^speech-[0-9a-f]{32}\.wav\.trim\.wav$/.test(clip.file) || clip.text !== translation?.text || translation.reviewRequired || source.uncertain && !source.reviewedAt && !job.sourceReviewed) throw new AppError("Segmentets ljud är inte aktuellt eller färdigt.", 404);
+    } else if (!original && (!job.options.targets.includes(target) || !job.outputs[target]?.includes(format))) throw new AppError("Exporten är inte färdig eller finns inte.", 404);
+    const filename = previewReady ? previewFile : original ? `original.${job.extension}` : clip?.file || `${target}.${format}`; const file = path.join(jobDir(id), filename); const info = await stat(file);
+    if (!info.size) throw new AppError("Mediafilen är tom.", 422);
+    const headers: Record<string, string> = { "Content-Type": `${types[format] || "application/octet-stream"}${["txt", "json", "srt", "vtt"].includes(format) ? "; charset=utf-8" : ""}`, "Content-Length": String(info.size), "Cache-Control": "private, no-store", "Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff", "Content-Disposition": `${query.get("download") === "true" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(previewReady ? `${path.basename(job.name, path.extname(job.name))}-source-preview.${format}` : original ? job.name : `${path.basename(job.name, path.extname(job.name))}-${target}.${format}`)}` };
     const range = request.headers.get("range"); let start = 0; let end = info.size - 1;
     if (range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);

@@ -54,6 +54,28 @@ class QualityTests(unittest.TestCase):
         decoded = json.loads(json.dumps(jsonable_encoder(result), allow_nan=False))
         self.assertTrue(decoded['review_required'])
 
+    def test_keeps_raw_words_and_reports_possible_code_switch_without_guessing(self):
+        text = 'هذا computer عند أحمد'
+        result = mark_uncertainty({'segments': [{'text': text, 'words': [{'word': 'computer', 'probability': .95}]}]})
+        self.assertEqual(result['segments'][0]['text'], text)
+        self.assertEqual(result['segments'][0]['raw_text'], text)
+        self.assertTrue(result['segments'][0]['code_switch'])
+        self.assertFalse(result['review_required'])
+
+    def test_ambiguous_cardinal_ordinal_is_only_flagged_never_rewritten(self):
+        text = 'عشر عاصفة مسماة العاصفة جيري'
+        result = mark_uncertainty({'segments': [{'text': text, 'words': [{'word': 'عشر', 'probability': .99}]}]})
+        self.assertEqual(result['segments'][0]['text'], text)
+        self.assertEqual(result['segments'][0]['words'][0]['word'], 'عشر')
+        self.assertTrue(result['segments'][0]['words'][0]['uncertain'])
+        self.assertIn('cardinal_ordinal_requires_listening', result['segments'][0]['quality_reasons'])
+
+    def test_cross_segment_loop_remains_available_for_review(self):
+        result = mark_uncertainty({'segments': [{'text': 'ايش قد ممكن'} for _ in range(20)]})
+        self.assertEqual(len(result['segments']), 20)
+        self.assertTrue(result['review_required'])
+        self.assertIn('repeated_phrase_across_segments', result['segments'][0]['quality_reasons'])
+
 
 if __name__ == '__main__':
     unittest.main()

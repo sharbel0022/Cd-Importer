@@ -12,6 +12,7 @@ export const optionsSchema = z.object({
   source: z.union([z.literal("auto"), language]).default("auto"),
   targets: z.array(language).min(1).max(3).refine((v) => new Set(v).size === v.length),
   style: z.enum(["natural", "literal", "professional", "casual"]).default("natural"),
+  translationMode: z.enum(["faithful", "natural"]).default("faithful"),
   mode: z.enum(["replace", "voiceover", "subtitles"]).default("replace"),
   voice: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).default("auto"),
   englishLocale: z.enum(["en-US", "en-GB"]).default("en-US"),
@@ -24,9 +25,10 @@ export const optionsSchema = z.object({
 }).strict();
 export type StudioOptions = z.infer<typeof optionsSchema>;
 export interface Word { start: number; end: number; word: string; rawWord?: string; probability?: number; uncertain?: boolean }
-export interface Segment { id: string; start: number; end: number; text: string; speaker: string; uncertain?: boolean; words?: Word[]; rawText?: string; qualityReasons?: string[]; confidence?: number }
+export interface Segment { id: string; start: number; end: number; text: string; speaker: string; uncertain?: boolean; words?: Word[]; rawText?: string; qualityReasons?: string[]; confidence?: number; reviewedAt?: string; codeSwitch?: boolean; asrAlternatives?: { model: string; text: string; disagreement: number }[] }
 export interface Timing { generated: number; window: number; tempo: number; deviationMs: number; review: boolean; attempts?: number; borrowedSeconds?: number }
-export interface Translation { id: string; text: string; timing?: Timing }
+export interface Translation { id: string; text: string; timing?: Timing; generation?: number; reviewRequired?: boolean; reviewMessage?: string; editedByUser?: boolean }
+export interface SourceEdit { id: string; at: string; before: { text: string; start: number; end: number }; after: { text: string; start: number; end: number } }
 export type Stage = "uploading" | "transcribing" | "translating" | "generating" | "synchronizing" | "exporting" | "completed";
 export type JobStatus = "queued" | "running" | "paused" | "cancelled" | "failed" | "review" | "completed";
 export interface MediaInfo { duration: number; sampleRate: number; channels: number; video: boolean; waveform: number[] }
@@ -36,10 +38,13 @@ export interface Job {
   command?: "pause" | "cancel"; message: string; error?: string;
   reviewReason?: "source" | "translation" | "timing"; sourceReviewed?: boolean;
   media?: MediaInfo; detectedLanguage?: string; sourceConfidence?: number; segments: Segment[];
+  rawSegments?: Segment[]; sourceEdits?: SourceEdit[];
+  segmentOutputs?: Record<string, Record<string, { file: string; text: string }>>;
   sourceContext?: { context: string; arabicKeywords: string };
   translations: Record<string, Translation[]>; outputs: Record<string, string[]>;
   warnings: string[]; metrics: { processingMs: number; stages: Record<string, number>; syncMaxDeviationMs?: number; reviewSegments?: number };
 }
+export function pendingSourceSegments(job: Job) { return job.segments.filter((s) => s.uncertain && !s.reviewedAt && !job.sourceReviewed); }
 export interface Capabilities {
   ready: boolean; cloud: boolean; asr: string; translation: string; tts: string;
   subtitleReady?: boolean; subtitleCloud?: boolean;

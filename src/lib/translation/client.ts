@@ -11,6 +11,10 @@ export function wavBlob(pcm: Int16Array): Blob {
   for (let i = 0; i < pcm.length; i++) view.setInt16(44 + i * 2, pcm[i], true);
   return new Blob([buffer], { type: "audio/wav" });
 }
-export function fileUrl(id: string, target: string, format: string, original = false, download = false) {
-  return `/api/translation/jobs/${id}/file?${new URLSearchParams({ target, format, original: String(original), download: String(download) })}`;
+export function fileUrl(id: string, target: string, format: string, original = false, download = false, revision?: number) {
+  return `/api/translation/jobs/${id}/file?${new URLSearchParams({ target, format, original: String(original), download: String(download), ...(revision !== undefined && !original ? { revision: String(revision) } : {}) })}`;
 }
+export function segmentUrl(jobId: string, target: string, id: string, revision: number) {
+  return `${fileUrl(jobId, target, "wav", false, false, revision)}&${new URLSearchParams({ segment: id })}`;
+}
+export function originalPreviewUrl(id: string, target: string) { return `${fileUrl(id, target, "wav", true)}&preview=true`; }
