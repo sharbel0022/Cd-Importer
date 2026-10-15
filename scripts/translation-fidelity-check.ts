@@ -11,11 +11,12 @@ const cases = [
   { id: "s1", text: "فاز Barcelona بخمس مباريات.", checks: [/Barcelona/iu, /\b(?:five|5)\b/iu] },
   { id: "s2", text: "لدي ثلاثة أرجل.", checks: [/\b(?:three|3)\b/iu, /\blegs\b/iu] },
   { id: "s3", text: "لن أسافر غدا.", checks: [/\b(?:not|won't)\b/iu, /\btomorrow\b/iu] },
+  { id: "s5", text: "تعمل شركة أوريون في مجال التعليم.", checks: [/Orion/iu, /educat/iu] },
   { id: "s4", text: "ثلاثة، لا، أقصد أربعة.", checks: [/\b(?:three|3)\b.*\bno\b.*\b(?:four|4)\b/iu] },
 ];
 const results = [];
-for (const translationMode of ["faithful", "natural"] as const) {
-  const translated = await translate(cases.map((c, i) => ({ ...c, start: i * 5, end: i * 5 + 4, speaker: "A" })), "en", optionsSchema.parse({ source: "ar", targets: ["en"], translationMode, rights: true }), "", AbortSignal.timeout(600_000));
+for (const translationMode of ["faithful", "natural", "professional", "literal"] as const) {
+  const translated = await translate(cases.map((c, i) => ({ ...c, start: i * 5, end: i * 5 + 4, speaker: "A" })), "en", optionsSchema.parse({ source: "ar", targets: ["en"], translationMode, glossary: [{source:"أوريون",translation:"Orion",target:"en",protect:false}], rights: true }), "", AbortSignal.timeout(600_000));
   for (const source of cases) {
     const output = translated.find((t) => t.id === source.id)!;
     const passed = source.checks.every((pattern) => pattern.test(output.text));

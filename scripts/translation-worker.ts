@@ -2,6 +2,7 @@ import { mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { atomicJson, dataRoot, jobDir, listJobs, updateJob } from "../src/lib/translation/store";
 import { runJob } from "../src/lib/translation/pipeline";
+import { retainTextArtifacts } from "../src/lib/translation/artifacts";
 
 await mkdir(dataRoot(), { recursive: true });
 const lockFile = path.join(dataRoot(), "worker.lock");
@@ -22,7 +23,7 @@ const heartbeat = () => atomicJson(path.join(dataRoot(), "worker.json"), { time:
 await heartbeat(); const timer = setInterval(() => { void heartbeat().catch(() => undefined); }, 4000);
 let lastCleanup = 0;
 try {
-  for (const job of await listJobs()) if (job.status === "running") await updateJob(job.id, (j) => { j.status = "paused"; j.command = undefined; j.message = "Återställd efter worker-avbrott. Återuppta när du är redo."; });
+  for (const job of await listJobs()) if (job.status === "running") await updateJob(job.id, (j) => { const retained = retainTextArtifacts(j); j.outputs = retained.outputs; j.outputManifest = retained.outputManifest; j.status = "paused"; j.command = undefined; j.message = "Återställd efter worker-avbrott. Återuppta när du är redo."; });
   console.log("AI Translation Studio worker redo. En fil åt gången. Ctrl+C pausar aktivt jobb.");
   while (!stop.signal.aborted) {
     if (Date.now() - lastCleanup > 3600_000) {
@@ -33,7 +34,15 @@ try {
       lastCleanup = Date.now();
     }
     const next = (await listJobs()).reverse().find((j) => j.status === "queued");
-    if (next) await runJob(next.id, stop.signal);
+    if (next) {
+      try { await runJob(next.id, stop.signal); }
+      catch {
+        // One damaged manifest or unexpected finalization failure must not stop
+        // every other queued project. Keep the original media/checkpoints.
+        console.error(`[translation ${next.id}] Oväntat jobbfel. Workern fortsätter med nästa projekt.`);
+        await updateJob(next.id, (job) => { if (job.status === "running" || job.status === "queued") { const retained = retainTextArtifacts(job); job.outputs = retained.outputs; job.outputManifest = retained.outputManifest; job.status = stop.signal.aborted ? "paused" : "failed"; job.command = undefined; job.error = "Jobbets slutsteg kunde inte sparas. Kontrollera arbetsytan och återuppta projektet."; job.message = job.error; } }).catch(() => undefined);
+      }
+    }
     else await new Promise((r) => setTimeout(r, 750));
   }
 } finally { clearInterval(timer); await rm(path.join(dataRoot(), "worker.json"), { force: true }); await rm(lockFile, { force: true }); }

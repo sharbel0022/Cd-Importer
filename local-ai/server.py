@@ -25,10 +25,13 @@ from starlette.concurrency import run_in_threadpool
 from asr_quality import mark_uncertainty
 from speech_text import speech_text
 import mms_voice
+from asr_models import decoding_options, installed_models, installed_path, settings_report
 
 app = FastAPI(title="Cd-Importer Local AI", docs_url=None, redoc_url=None)
 gate = asyncio.Semaphore(1)
 whisper = None
+whisper_key = None
+whisper_runtime = None
 diarizer = None
 xtts = None
 MAX_BYTES = 1024 * 1024 * 1024
@@ -78,25 +81,7 @@ def installed(name):
 
 
 def whisper_weights_available():
-    model_name = os.getenv('WHISPER_MODEL', 'small')
-    model_path = Path(model_name)
-    required = ('model.bin', 'config.json', 'tokenizer.json')
-    if model_path.is_dir():
-        return all(model_path.joinpath(name).is_file() and model_path.joinpath(name).stat().st_size > 0 for name in required)
-    # A package alone is not an installed acoustic model. Check the local HF
-    # cache without downloading anything during a health probe.
-    if ':' in model_name or model_name.startswith(('.', '/', '\\')):
-        return False
-    try:
-        from huggingface_hub import try_to_load_from_cache
-        # Resolve the aliases supported by the installed faster-whisper build.
-        from faster_whisper.utils import _MODELS
-        repo = _MODELS.get(model_name, model_name)
-        if '/' not in repo:
-            return False
-        return all(isinstance(try_to_load_from_cache(repo, name), str) for name in required)
-    except (ImportError, OSError, ValueError):
-        return False
+    return installed_path(os.getenv('WHISPER_MODEL', 'small')) is not None
 
 
 def xtts_available():
@@ -138,6 +123,7 @@ async def health():
         pass
     missing_models = sorted({translation_models[key] for key, ready in model_readiness.items() if not ready})
     return {"ready": all(services.values()), "services": services,
+            'asrModels': [{key: value for key, value in model.items() if key != 'model'} for model in installed_models()] if installed('faster_whisper') else [],
             'translationModels': translation_models, 'translationModelReady': model_readiness,
             "languages": sorted(set([v["language"] for v in available] + (XTTS_LANGUAGES if cloning else []))),
             "voices": [v["id"] for v in available] + (["xtts"] if cloning else []),
@@ -171,12 +157,18 @@ async def upload(file: UploadFile, suffix=".wav"):
         await file.close()
 
 
-def transcribe_sync(file, language, context=""):
-    global whisper
-    if not installed('faster_whisper') or not whisper_weights_available():
+def transcribe_sync(file, language, context="", model_id=""):
+    global whisper, whisper_key, whisper_runtime
+    if not installed('faster_whisper'):
         raise HTTPException(503, 'Whisper model files are missing. Install/configure WHISPER_MODEL before transcribing.')
+    selected = next((item for item in installed_models() if item['id'] == (model_id or 'configured')), None)
+    if selected is None:
+        raise HTTPException(422 if model_id else 503, 'Requested ASR model is not installed and allowlisted. No model was downloaded.')
     from faster_whisper import WhisperModel
-    if whisper is None:
+    if whisper is None or whisper_key != selected['model']:
+        # Keep one acoustic model resident. Never accumulate several large
+        # models when a user compares alternatives on a memory-limited host.
+        whisper = None
         device = os.getenv("WHISPER_DEVICE", "cpu")
         if device == "auto":
             import ctranslate2
@@ -185,20 +177,21 @@ def transcribe_sync(file, language, context=""):
             except RuntimeError:
                 device = "cpu"
         try:
-            whisper = WhisperModel(os.getenv("WHISPER_MODEL", "small"), device=device,
-                                   compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8" if device == "cpu" else "float16"), cpu_threads=4)
+            compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8" if device == "cpu" else "float16")
+            whisper = WhisperModel(selected['model'], device=device, compute_type=compute_type, cpu_threads=4, local_files_only=True)
         except (RuntimeError, ValueError):
             if device != "cuda":
                 raise
             print("Whisper CUDA initialization failed; using CPU int8.", flush=True)
-            whisper = WhisperModel(os.getenv("WHISPER_MODEL", "small"), device="cpu", compute_type="int8", cpu_threads=4)
+            device, compute_type = 'cpu', 'int8'
+            whisper = WhisperModel(selected['model'], device=device, compute_type=compute_type, cpu_threads=4, local_files_only=True)
+        whisper_key = selected['model']
+        whisper_runtime = (device, compute_type)
     # Acoustic decoding alone resolves accents. No vocabulary prompts, visual
     # hints, grammar rules or language models may replace the measured words.
-    segments, info = whisper.transcribe(str(file), language=language or None, beam_size=5, temperature=(0, 0.2, 0.4, 0.6, 0.8, 1.0),
-                                      condition_on_previous_text=False, vad_filter=True, word_timestamps=True, multilingual=not bool(language),
-                                      vad_parameters={'min_silence_duration_ms': 500, 'speech_pad_ms': 400},
-                                      language_detection_segments=3)
-    result = {"language": info.language, "language_probability": info.language_probability,
+    segments, info = whisper.transcribe(str(file), **decoding_options(language))
+    result = {"model": selected['id'], "settings": settings_report(language, *(whisper_runtime or ('unknown', 'unknown'))),
+            "language": info.language, "language_probability": info.language_probability,
             "duration": info.duration, "duration_after_vad": info.duration_after_vad,
             "segments": [{"start": s.start, "end": s.end, "text": s.text,
             "avg_logprob": s.avg_logprob, "no_speech_prob": s.no_speech_prob,
@@ -208,14 +201,14 @@ def transcribe_sync(file, language, context=""):
 
 
 @app.post("/transcribe", dependencies=[Depends(authorize)])
-async def transcribe(file: UploadFile = File(...), language: str = Form(""), context: str = Form("")):
+async def transcribe(file: UploadFile = File(...), language: str = Form(""), context: str = Form(""), model: str = Form("")):
     directory, source = await upload(file)
     try:
         async with gate:
             if language == 'auto':
                 language = ''
             try:
-                result = await run_in_threadpool(transcribe_sync, source, language, context)
+                result = await run_in_threadpool(transcribe_sync, source, language, context, model)
             except (ValueError, RuntimeError) as error:
                 raise HTTPException(422, 'Cannot decode/transcribe this media. Check the file, language and Whisper model.') from error
             return result

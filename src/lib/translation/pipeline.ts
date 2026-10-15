@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
@@ -7,9 +7,10 @@ import { createWriteStream } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { AppError } from "../errors";
 import { atomicJson, durationLimit, enforceQuota, jobDir, readJob, updateJob } from "./store";
-import { capabilities, diarize, resolveVoice, separate, synthesize, transcribe, translate, TranslationIntegrityError, validateOptions, type Turn } from "./providers";
-import { chunk, createTimeline, ffmpeg, inputArgs, inspect, normalize, placeSpeech, renderTrack, renderVideo, silenceBoundaries, speechDuration, SpeechWindowError, trimSpeech, verifyExport, waveform } from "./media";
-import { pendingSourceSegments, subtitles, timingPlan, type Job, type Segment, type Stage, type Translation } from "./types";
+import { capabilities, diarize, resolveVoice, separate, synthesize, transcribe, transcriptionSchema, translate, TranslationIntegrityError, validateOptions, type Turn } from "./providers";
+import { cachedSpeech, chunk, createTimeline, ffmpeg, inputArgs, inspect, normalize, placeSpeech, renderCaptionedVideo, renderTrack, renderVideo, silenceBoundaries, speechDuration, SpeechWindowError, verifyExport, waveform } from "./media";
+import { describeArtifacts, digestFile, retainTextArtifacts, TEXT_FORMATS, writeTextArtifacts, type ExportProvenance } from "./artifacts";
+import { pendingSourceSegments, timingPlan, type Job, type JobStatus, type Segment, type Stage, type Translation } from "./types";
 
 async function exists(file: string) { try { return (await stat(file)).size > 0; } catch { return false; } }
 function hash(text: string) { return createHash("sha256").update(text).digest("hex").slice(0, 32); }
@@ -70,30 +71,32 @@ export function assignSpeakers(segments: Segment[], turns: Turn[]): Segment[] {
   }
   return result.map((s, n) => ({ ...s, id: `s${n + 1}` }));
 }
-async function persistExports(job: Job) {
-  const dir = jobDir(job.id);
-  for (const target of job.options.targets) {
-    const translations = job.translations[target];
-    if (!translations || job.segments.some((s) => !translations.some((t) => t.id === s.id && t.text && !t.reviewRequired))) continue;
-    await writeFile(path.join(dir, `${target}.srt`), subtitles(job.segments, translations, "srt"));
-    await writeFile(path.join(dir, `${target}.vtt`), subtitles(job.segments, translations, "vtt"));
-    const lookup = new Map(translations.map((t) => [t.id, t]));
-    await writeFile(path.join(dir, `${target}.txt`), job.segments.map((s) => `[${s.start.toFixed(3)}–${s.end.toFixed(3)}] ${s.speaker}\nOriginal: ${s.text}\n${lookup.get(s.id)?.text || ""}`).join("\n\n"));
-    await atomicJson(path.join(dir, `${target}.json`), { sourceLanguage: job.detectedLanguage, targetLanguage: target, translationMode: job.options.translationMode || "faithful", aiGenerated: true, rawSegments: job.rawSegments, sourceEdits: job.sourceEdits || [], segments: job.segments.map((s) => ({ ...s, translation: lookup.get(s.id) })), metrics: job.metrics, warnings: job.warnings });
-  }
+async function persistExports(job: Job, provenance: ExportProvenance) {
+  const manifest = await writeTextArtifacts(job, provenance);
+  return updateJob(job.id, (j) => {
+    if (j.revision !== job.revision) throw new AppError("Exportens version har ändrats. Återuppta jobbet.", 409);
+    for (const target of j.options.targets) {
+      const media = (j.outputs[target] || []).filter((format) => !(TEXT_FORMATS as readonly string[]).includes(format));
+      if (manifest[target]) {
+        j.outputs[target] = [...TEXT_FORMATS, ...media];
+        (j.outputManifest ??= {})[target] = { ...j.outputManifest?.[target], ...manifest[target] };
+      }
+    }
+  });
 }
 export async function runJob(id: string, externalSignal?: AbortSignal) {
   const controller = new AbortController(); const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
   const monitor = setInterval(() => { void readJob(id).then((job) => { if (job.command) controller.abort(new Error(job.command)); }).catch(() => controller.abort()); }, 400);
   const started = performance.now(); let stageStart = started; let activeStage: Stage | undefined;
-  let claimed = false;
+  let claimed = false; let provenance: ExportProvenance | undefined; let outcome: JobStatus | undefined;
+  let preparedMedia: NonNullable<Job["outputManifest"]> = {};
   async function step(stage: Stage, message: string) {
     signal.throwIfAborted(); const now = performance.now();
     await updateJob(id, (j) => { if (activeStage) j.metrics.stages[activeStage] = Math.max(0, j.metrics.stages[activeStage] || 0) + Math.max(0, Math.round(now - stageStart)); j.stage = stage; j.message = message; });
     activeStage = stage; stageStart = now;
   }
   try {
-    let job = await updateJob(id, (j) => { if (j.status === "queued" && !j.command) { j.status = "running"; j.error = undefined; j.outputs = {}; j.reviewReason = undefined; claimed = true; } });
+    let job = await updateJob(id, (j) => { if (j.status === "queued" && !j.command) { const retained = retainTextArtifacts(j); j.status = "running"; j.error = undefined; j.outputs = retained.outputs; j.outputManifest = retained.outputManifest; j.reviewReason = undefined; claimed = true; } });
     if (!claimed) return;
     await validateOptions(job.options);
     const dir = jobDir(id); const original = path.join(dir, `original.${job.extension}`); const normalized = path.join(dir, "normalized.wav");
@@ -107,6 +110,9 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       job = await updateJob(id, (j) => { j.media = { ...media, waveform: wave }; });
     }
     if (!(await exists(normalized))) await normalize(original, normalized, signal, durationLimit(), job.extension);
+    const [sourceDigest, normalizedDigest] = await Promise.all([digestFile(original, signal), digestFile(normalized, signal)]);
+    const caps = await capabilities();
+    provenance = { sourceSha256: sourceDigest.sha256, normalizedSha256: normalizedDigest.sha256, providers: { asr: caps.asr, translation: caps.translation, tts: caps.tts } };
     const duration = job.media!.duration;
     if (job.media!.video && !(await exists(path.join(dir, "source-preview.mp4")))) {
       await step("transcribing", "Förbereder originalvideon för uppspelning i webbläsaren.");
@@ -120,9 +126,15 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       for (const [chunkIndex, current] of chunks.entries()) {
         const { start, duration: partDuration, hardBoundary } = current;
         signal.throwIfAborted(); await step("transcribing", `Transkriberar ${Math.floor(start)}–${Math.ceil(start + partDuration)} s av ${Math.ceil(duration)} s.`);
-        const asrVersion = hash(JSON.stringify([process.env.WHISPER_MODEL, job.options.source, "acoustic-only-raw-codeswitch-v6"]));
+        const asrVersion = hash(JSON.stringify([normalizedDigest.sha256, process.env.STUDIO_ASR_PROVIDER || "openai", process.env.WHISPER_MODEL, job.options.source, "acoustic-only-raw-codeswitch-v7"]));
         const cache = path.join(dir, `asr-${start}-${partDuration}-${asrVersion}.json`); let data: Awaited<ReturnType<typeof transcribe>>;
-        if (await exists(cache)) data = JSON.parse(await readFile(cache, "utf8"));
+        let cached: Awaited<ReturnType<typeof transcribe>> | undefined;
+        if (await exists(cache)) {
+          try { const parsed = transcriptionSchema.safeParse(JSON.parse(await readFile(cache, "utf8"))); if (parsed.success) cached = parsed.data; }
+          catch { /* Interrupted or obsolete checkpoints are recomputed. */ }
+          if (!cached) await rm(cache, { force: true });
+        }
+        if (cached) data = cached;
         else { const part = path.join(dir, "asr-current.wav"); await chunk(normalized, part, start, partDuration, signal); data = await transcribe(part, job.options.source, signal); await atomicJson(cache, data); await rm(part, { force: true }); }
         // A high no-speech score can also be faint real speech. Keep its words
         // for human review instead of silently deleting them from the dub.
@@ -198,6 +210,9 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
         job = await updateJob(id, (j) => { j.translations[target] = j.segments.flatMap((s) => done.has(s.id) ? [done.get(s.id)!] : []); });
       }
     }
+    // Publish safe text before separation or synthesis, so either downstream
+    // service can fail without hiding already reviewed translations/subtitles.
+    job = await persistExports(job, provenance);
     let background: string | undefined;
     if (job.options.preserveBackground && job.options.mode === "replace") {
       background = path.join(dir, "background.wav");
@@ -211,7 +226,7 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
         await rm(`${background}.tmp`, { force: true }); await rm(separationSource, { force: true });
       }
     }
-    const caps = await capabilities(); const speakers = [...new Set(job.segments.map((s) => s.speaker))].sort();
+    const speakers = [...new Set(job.segments.map((s) => s.speaker))].sort();
     const speechFiles: Record<string, string[]> = {}; let review = 0; let maxDeviation = 0;
     if (job.options.mode !== "subtitles") {
       for (const target of job.options.targets) {
@@ -225,18 +240,12 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
           if (job.options.preserveVoice) {
             const sample = job.segments.filter((s) => s.speaker === segment.speaker && !s.uncertain).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
             if (!sample || sample.end - sample.start < 3) throw new AppError(`Talare ${segment.speaker} saknar ett rent röstprov på minst tre sekunder.`, 422);
-            reference = path.join(dir, `reference-${hash(segment.speaker)}.wav`);
+            reference = path.join(dir, `reference-${hash(JSON.stringify([normalizedDigest.sha256, segment.speaker, sample.start, Math.min(12, sample.end - sample.start)]))}.wav`);
             if (!(await exists(reference))) await chunk(normalized, reference, sample.start, Math.min(12, sample.end - sample.start), signal);
           }
           async function generate(t: Translation) {
             const file = path.join(dir, `speech-${hash(JSON.stringify([target, job.options.englishLocale || "en-US", t.text, t.generation || 0, voice, caps.tts, reference ? hash(await readFile(reference).then((v) => v.toString("base64"))) : "", process.env.MMS_SEED || "555", "trim-edges-locale-v6"]))}.wav`);
-            if (!(await exists(file))) { const bytes = await synthesize(t.text, target, voice, signal, reference, job.options); await writeFile(file, bytes); }
-            try {
-              const trimmed = `${file}.trim.wav`;
-              if (!(await exists(trimmed))) await trimSpeech(file, signal);
-              return { file: trimmed, duration: await speechDuration(trimmed, signal) };
-            }
-            catch (error) { if (!signal.aborted) { await rm(file, { force: true }); await rm(`${file}.trim.wav`, { force: true }); } throw error; }
+            return cachedSpeech(file, () => synthesize(t.text, target, voice, signal, reference, job.options), signal);
           }
           const window = speechWindow(job.segments, i, duration);
           if (window <= 0) throw new AppError(`Segment ${segment.id} saknar ett eget tidsfönster. Justera överlappande tidsstämplar.`, 422);
@@ -250,15 +259,18 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
       }
     }
     job = await updateJob(id, (j) => { j.metrics.reviewSegments = review; j.metrics.syncMaxDeviationMs = maxDeviation; });
-    await persistExports(job);
+    job = await persistExports(job, provenance);
     if (pendingSource.size || translationIssues.length) {
-      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = pendingSource.size ? "source" : "translation"; j.outputs = {}; j.message = pendingSource.size ? `${pendingSource.size} källsegment behöver granskas. Tillförlitliga segment är bearbetade; lyssna och godkänn de markerade segmenten.` : `Översättningen av ${[...new Set(translationIssues)].join(", ")} behöver granskas. Rätta texten och spara före export.`; });
+      await updateJob(id, (j) => { j.reviewReason = pendingSource.size ? "source" : "translation"; j.outputs = {}; j.message = pendingSource.size ? `${pendingSource.size} källsegment behöver granskas. Tillförlitliga segment är bearbetade; lyssna och godkänn de markerade segmenten.` : `Översättningen av ${[...new Set(translationIssues)].join(", ")} behöver granskas. Rätta texten och spara före export.`; });
+      outcome = "review";
       return;
     }
     if (review) {
-      await updateJob(id, (j) => { j.status = "review"; j.reviewReason = "timing"; j.message = `${review} segment ryms inte med naturligt tempo. Justera tidsfönstret eller granska formuleringen utan att ta bort innehåll. Hela texten finns kvar.`; j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json"]])); });
+      await updateJob(id, (j) => { j.reviewReason = "timing"; j.message = `${review} segment ryms inte med naturligt tempo. Justera tidsfönstret eller granska formuleringen utan att ta bort innehåll. Hela texten finns kvar.`; j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json"]])); });
+      outcome = "review";
       return;
     }
+    const mediaManifest: NonNullable<Job["outputManifest"]> = {};
     for (const target of job.options.targets) {
       if (job.options.mode !== "subtitles") {
         await step("synchronizing", `Placerar talet på absoluta tidspositioner (${target}).`);
@@ -284,16 +296,17 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
             await updateJob(id, (j) => {
               timing.review = true; timing.deviationMs = overflow!.overflowMs; j.translations[target][i].timing = timing;
               j.metrics.reviewSegments = (j.metrics.reviewSegments || 0) + 1; j.metrics.syncMaxDeviationMs = Math.max(j.metrics.syncMaxDeviationMs || 0, overflow!.overflowMs);
-              j.status = "review"; j.reviewReason = "timing"; j.message = `Segment ${j.segments[i].id} ryms inte efter uppmätt tempojustering. Ingen dubbning klipptes bort; justera text eller tid.`;
+              j.reviewReason = "timing"; j.message = `Segment ${j.segments[i].id} ryms inte efter uppmätt tempojustering. Ingen dubbning klipptes bort; justera text eller tid.`;
               j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json"]]));
             });
             await rm(timeline, { force: true });
+            outcome = "review";
             return;
           }
           job = await updateJob(id, (j) => { j.translations[target][i].timing = timing; });
         }
         await step("exporting", `Exporterar WAV, MP3 och M4A (${target}).`);
-        await renderTrack(dir, target, duration, original, job.options.mode === "voiceover" ? "voiceover" : "replace", background, signal);
+        await renderTrack(dir, target, duration, original, job.options.mode === "voiceover" ? "voiceover" : "replace", background, signal, job.options.mix);
         await speechDuration(path.join(dir, `${target}.wav`), signal);
         const actual = (await inspect(path.join(dir, `${target}.wav`), signal)).duration;
         if (Math.abs(actual - duration) > 0.08) throw new AppError("Exportens längd avviker från originalet. Ingen godkänd ljudexport publicerades.", 502);
@@ -303,29 +316,52 @@ export async function runJob(id: string, externalSignal?: AbortSignal) {
         await step("exporting", `Exporterar MP4 med ${job.options.mode === "subtitles" ? "originalljud" : "översatt tal"} (${target}).`);
         await renderVideo(original, job.options.mode === "subtitles" ? undefined : path.join(dir, `${target}.wav`), path.join(dir, `${target}.mp4`), duration, signal, job.options.mode === "subtitles" ? { file: path.join(dir, `${target}.srt`), language: target } : undefined);
       }
-      for (const format of [...(job.options.mode !== "subtitles" ? ["wav", "mp3", "m4a"] : []), ...(job.media!.video ? ["mp4"] : [])]) await verifyExport(path.join(dir, `${target}.${format}`), duration, signal, job.options.mode !== "subtitles");
+      const formats = [...(job.options.mode !== "subtitles" ? ["wav", "mp3", "m4a"] : []), ...(job.media!.video ? ["mp4"] : [])];
+      for (const format of formats) await verifyExport(path.join(dir, `${target}.${format}`), duration, signal, job.options.mode !== "subtitles");
+      if (job.media!.video && job.options.subtitles?.burnIn) {
+        await step("exporting", `Bränner in granskade undertexter i en separat MP4 (${target}).`);
+        const captioned = await renderCaptionedVideo(dir, target, duration, signal, job.options.subtitles);
+        await verifyExport(captioned, duration, signal, job.options.mode !== "subtitles");
+        formats.push("mp4-captioned");
+      }
+      mediaManifest[target] = await describeArtifacts(job, target, formats);
     }
     signal.throwIfAborted();
     await updateJob(id, (j) => {
       if (j.command) throw new AppError("Jobbkontroll inväntas.", 409);
-      j.status = "completed"; j.stage = "completed"; j.message = j.options.mode === "subtitles" ? "Klart. Granska översättning och undertexter innan vidare användning." : "Klart. Granska översättning och AI-röst innan vidare användning.";
+      j.message = j.options.mode === "subtitles" ? "Klart. Granska översättning och undertexter innan vidare användning." : "Klart. Granska översättning och AI-röst innan vidare användning.";
       j.reviewReason = undefined;
-      j.outputs = Object.fromEntries(j.options.targets.map((t) => [t, ["srt", "vtt", "txt", "json", ...(j.options.mode !== "subtitles" ? ["wav", "mp3", "m4a"] : []), ...(j.media!.video ? ["mp4"] : [])]]));
       if (j.options.mode === "replace") j.warnings = [...new Set([...j.warnings, background ? "Bakgrundsseparering kan ge artefakter och kvarvarande originaltal. Lyssna igenom resultatet." : "Hela originalljudspåret ersätts. Bakgrundsmusik och ljudeffekter bevaras inte utan separering."])];
     });
+    preparedMedia = mediaManifest;
+    outcome = "completed";
   } catch (error) {
     if (!claimed) throw error;
     await updateJob(id, (j) => {
-      if (j.command === "cancel") { j.status = "cancelled"; j.message = "Jobbet avbröts."; }
-      else if (j.command === "pause" || externalSignal?.aborted) { j.status = "paused"; j.message = "Pausat. Slutförda steg har sparats."; }
-      else { j.status = "failed"; j.error = error instanceof AppError ? error.message : "Bearbetningen misslyckades. Kontrollera worker-loggen och modellinstallationen."; j.message = j.error; console.error(`[translation ${id}] ${error instanceof AppError ? error.message : "Oväntat pipelinefel"}`); }
-      j.command = undefined;
+      if (j.command === "cancel") { outcome = "cancelled"; j.message = "Jobbet avbröts."; }
+      else if (j.command === "pause" || externalSignal?.aborted) { outcome = "paused"; j.message = "Pausat. Slutförda steg har sparats."; }
+      else { outcome = "failed"; j.error = error instanceof AppError ? error.message : "Bearbetningen misslyckades. Kontrollera worker-loggen och modellinstallationen."; j.message = j.error; console.error(`[translation ${id}] ${error instanceof AppError ? error.message : "Oväntat pipelinefel"}`); }
     });
   } finally {
     clearInterval(monitor);
     if (claimed) {
-      const final = await updateJob(id, (j) => { const now = performance.now(); j.metrics.processingMs = Math.max(0, j.metrics.processingMs) + Math.max(0, Math.round(now - started)); if (activeStage) j.metrics.stages[activeStage] = Math.max(0, j.metrics.stages[activeStage] || 0) + Math.max(0, Math.round(now - stageStart)); j.command = undefined; });
-      if (["completed", "review"].includes(final.status)) await persistExports(final);
+      // Keep the job non-editable until metrics, text files and their manifest
+      // agree. No terminal status is observable while files can still change.
+      const final = await updateJob(id, (j) => { const now = performance.now(); j.metrics.processingMs = Math.max(0, j.metrics.processingMs) + Math.max(0, Math.round(now - started)); if (activeStage) j.metrics.stages[activeStage] = Math.max(0, j.metrics.stages[activeStage] || 0) + Math.max(0, Math.round(now - stageStart)); });
+      if (provenance && (outcome === "completed" || outcome === "review")) await persistExports(final, provenance);
+      await updateJob(id, (j) => {
+        if (j.command === "cancel") { j.status = "cancelled"; j.message = "Jobbet avbröts."; }
+        else if (j.command === "pause" || externalSignal?.aborted) { j.status = "paused"; j.message = "Pausat. Slutförda steg har sparats."; }
+        else j.status = outcome || "failed";
+        if (j.status === "completed") {
+          j.stage = "completed";
+          j.outputs = Object.fromEntries(j.options.targets.map((target) => [target, [...TEXT_FORMATS, ...Object.keys(preparedMedia[target] || {})]]));
+          for (const target of j.options.targets) (j.outputManifest ??= {})[target] = { ...j.outputManifest?.[target], ...preparedMedia[target] };
+        } else {
+          const retained = retainTextArtifacts(j); j.outputs = retained.outputs; j.outputManifest = retained.outputManifest;
+        }
+        j.command = undefined;
+      });
     }
   }
 }

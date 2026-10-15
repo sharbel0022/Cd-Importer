@@ -5,7 +5,8 @@ import { AppError, errorResponse } from "@/lib/errors";
 import { guardRequest } from "@/lib/request";
 import { atomicJson, enforceQuota, jobDir, listJobs, receiveUpload, uploadMb } from "@/lib/translation/store";
 import { validateOptions } from "@/lib/translation/providers";
-import { EXTENSIONS, optionsSchema, type Job } from "@/lib/translation/types";
+import { EXTENSIONS, type Job } from "@/lib/translation/types";
+import { uploadOptionsFromRequest } from "@/lib/translation/upload-options";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -17,12 +18,11 @@ export async function POST(request: Request) {
   let dir: string | undefined;
   try {
     guardRequest(request, "studio-upload", true);
-    let name: string; let raw: unknown;
-    try { name = Array.from(decodeURIComponent(request.headers.get("x-file-name") || ""), (c) => c.charCodeAt(0) < 32 || c === "/" || c === "\\" ? "_" : c).join(""); raw = JSON.parse(decodeURIComponent(request.headers.get("x-studio-options") || "")); }
+    let name: string;
+    try { name = Array.from(decodeURIComponent(request.headers.get("x-file-name") || ""), (c) => c.charCodeAt(0) < 32 || c === "/" || c === "\\" ? "_" : c).join(""); }
     catch { throw new AppError("Uppladdningen saknar giltigt namn eller inställningar."); }
     if (!name || name.length > 200) throw new AppError("Filnamnet måste vara 1–200 tecken.");
-    const parsed = optionsSchema.safeParse(raw); if (!parsed.success) throw new AppError(parsed.error.issues[0]?.message || "Ogiltiga inställningar.");
-    const options = parsed.data; await validateOptions(options);
+    const options = await uploadOptionsFromRequest(request); await validateOptions(options);
     const extension = path.extname(name).slice(1).toLowerCase(); if (!EXTENSIONS[extension]) throw new AppError("Välj MP3, WAV, M4A, AAC, FLAC, OGG, MP4, MOV, MKV eller WebM.", 415);
     if ((await listJobs()).filter((j) => ["queued", "running"].includes(j.status)).length >= 8) throw new AppError("Jobbkön är full. Vänta eller avbryt ett jobb.", 429);
     await enforceQuota();

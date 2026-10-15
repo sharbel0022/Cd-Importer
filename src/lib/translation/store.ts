@@ -9,10 +9,10 @@ export function jobDir(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw new AppError("Ogiltigt jobb-ID.", 400);
   return path.join(dataRoot(), id);
 }
-export async function atomicJson(file: string, value: unknown) {
+export async function atomicWrite(file: string, value: string | Uint8Array) {
   const temp = `${file}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temp, JSON.stringify(value), { flag: "wx" });
+    await writeFile(temp, value, { flag: "wx" });
     for (let n = 0; ; n++) {
       try { await rename(temp, file); break; }
       catch (error) { if (n >= 8 || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code || "")) throw error; await new Promise((r) => setTimeout(r, 25 * (n + 1))); }
@@ -20,6 +20,7 @@ export async function atomicJson(file: string, value: unknown) {
   }
   finally { await rm(temp, { force: true }); }
 }
+export async function atomicJson(file: string, value: unknown) { await atomicWrite(file, JSON.stringify(value)); }
 export async function readJob(id: string): Promise<Job> {
   try { return JSON.parse(await readFile(path.join(jobDir(id), "job.json"), "utf8")) as Job; }
   catch (error) { if (error instanceof AppError) throw error; throw new AppError("Jobbet finns inte eller har rensats.", 404); }

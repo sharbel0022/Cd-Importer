@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { POST as upload } from "@/app/api/translation/jobs/route";
@@ -13,6 +14,7 @@ import { wavBlob } from "@/lib/translation/client";
 import type { Job } from "@/lib/translation/types";
 import { AppError } from "@/lib/errors";
 import * as providers from "@/lib/translation/providers";
+import * as artifacts from "@/lib/translation/artifacts";
 
 vi.mock("@/lib/translation/providers", async (original) => ({ ...await original<typeof import("@/lib/translation/providers")>(), transcribe: vi.fn(), translate: vi.fn(), synthesize: vi.fn(), diarize: vi.fn(), separate: vi.fn() }));
 let root: string;
@@ -36,6 +38,12 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     const job = await makeJob(); await runJob(job.id); const result = await readJob(job.id);
     expect(result.status, result.error).toBe("completed"); expect(result.detectedLanguage).toBe("arabic");
     expect(result.outputs.sv).toEqual(["srt", "vtt", "txt", "json", "wav", "mp3", "m4a"]);
+    for (const format of result.outputs.sv) {
+      const bytes = await readFile(path.join(jobDir(job.id), `sv.${format}`));
+      expect(result.outputManifest?.sv[format]).toMatchObject({ bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), revision: result.revision });
+    }
+    const metadata = JSON.parse(await readFile(path.join(jobDir(job.id), "sv.json"), "utf8"));
+    expect(metadata.provenance).toMatchObject({ revision: result.revision, sourceSha256: createHash("sha256").update(await readFile(path.join(jobDir(job.id), "original.wav"))).digest("hex") });
     expect((await inspect(path.join(jobDir(job.id), "sv.wav"), new AbortController().signal)).duration).toBeCloseTo(3, 2);
     const original = await readFile(path.join(jobDir(job.id), "original.wav")); const translated = await readFile(path.join(jobDir(job.id), "sv.wav")); expect(translated.equals(original)).toBe(false);
     await ffmpeg(["-i", path.join(jobDir(job.id), "sv.wav"), "-ss", "0.6", "-t", "0.2", "-ar", "16000", "-ac", "1", "-f", "s16le", path.join(root, "decoded.pcm")], new AbortController().signal);
@@ -61,13 +69,20 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     const signal = new AbortController().signal; const input = path.join(root, "subtitles-input.mp4");
     await ffmpeg(["-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=3", "-f", "lavfi", "-i", "sine=frequency=220:duration=3", "-c:v", "libx264", "-c:a", "aac", "-shortest", input], signal);
     vi.mocked(providers.translate).mockResolvedValue([{ id: "s1", text: "Hello world" }]);
-    const job = await makeJob("mp4", await readFile(input), { targets: ["en"], mode: "subtitles" }); await runJob(job.id);
+    const job = await makeJob("mp4", await readFile(input), { targets: ["en"], mode: "subtitles", subtitles: { bilingual: true, speakerLabels: true, burnIn: true } }); await runJob(job.id);
     const result = await readJob(job.id); expect(result.status, result.error).toBe("completed"); expect(providers.synthesize).not.toHaveBeenCalled();
     const output = path.join(jobDir(job.id), "en.mp4");
     expect(await inspect(output, signal)).toMatchObject({ video: true, duration: 3 });
     const captions = path.join(root, "extracted-captions.srt");
     await ffmpeg(["-i", output, "-map", "0:s:0", "-c:s", "srt", captions], signal);
     expect(await readFile(captions, "utf8")).toContain("Hello world");
+    expect(result.outputs.en).toContain("mp4-captioned");
+    expect(result.outputManifest?.en["mp4-captioned"].sha256).toMatch(/^[0-9a-f]{64}$/);
+    const exportedMetadata = JSON.parse(await readFile(path.join(jobDir(job.id), "en.json"), "utf8"));
+    expect(exportedMetadata.provenance.captionRender).toMatchObject({ requestedFont: "Arial", frameWidth: 160, frameHeight: 90, marginPercent: 5 });
+    const burned = await getFile(new Request("http://localhost/file?target=en&format=mp4-captioned", { headers: { Range: "bytes=0-99" } }), { params: Promise.resolve({ id: job.id }) });
+    expect(burned.status).toBe(206); expect(burned.headers.get("Content-Type")).toBe("video/mp4");
+    expect((await burned.arrayBuffer()).byteLength).toBe(100);
     const decoded = path.join(root, "original-audio.pcm"); await ffmpeg(["-i", output, "-ss", "0.6", "-t", "0.2", "-ar", "16000", "-ac", "1", "-f", "s16le", decoded], signal);
     const pcm = await readFile(decoded); let crossings = 0; for (let i = 2; i < pcm.length; i += 2) if (pcm.readInt16LE(i - 2) <= 0 && pcm.readInt16LE(i) > 0) crossings++;
     expect(crossings).toBeGreaterThan(35); expect(crossings).toBeLessThan(55);
@@ -120,6 +135,35 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     expect(result.translations.sv[0]).toMatchObject({ text: "Den långa meningen", timing: { attempts: 0, review: true } });
     expect(result.translations.sv[0].timing!.tempo).toBeLessThanOrEqual(1.2);
     expect(result.outputs.sv).not.toContain("wav");
+  }, 30000);
+  it.each([undefined, "cancel", "pause"] as const)("publishes final media atomically and honors a last-moment %s command", async (command) => {
+    const writeText = artifacts.writeTextArtifacts; let publications = 0; let attempted = false;
+    const job = await makeJob();
+    const edit = () => control(new Request("http://localhost/control", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "edit", revision: 0, edits: [{ id: "s1", target: "sv", text: "An explicit later correction", start: 0.5, end: 2, speaker: "unknown" }] }) }), { params: Promise.resolve({ id: job.id }) });
+    vi.spyOn(artifacts, "writeTextArtifacts").mockImplementation(async (snapshot, provenance) => {
+      if (++publications === 3) {
+        attempted = true;
+        expect(await readJob(job.id)).toMatchObject({ status: "running", revision: 0 });
+        expect(snapshot.metrics.processingMs).toBeGreaterThan(0);
+        expect((await edit()).status).toBe(409);
+        const before = await readJob(job.id);
+        expect(before.outputs.sv).toEqual(["srt", "vtt", "txt", "json"]);
+        expect(before.outputManifest?.sv.mp3).toBeUndefined();
+        expect((await getFile(new Request("http://localhost/file?target=sv&format=mp3"), { params: Promise.resolve({ id: job.id }) })).status).toBe(404);
+        if (command) expect((await control(new Request("http://localhost/control", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: command }) }), { params: Promise.resolve({ id: job.id }) })).status).toBe(200);
+      }
+      return writeText(snapshot, provenance);
+    });
+    await runJob(job.id); expect(attempted).toBe(true);
+    const complete = await readJob(job.id); expect(complete).toMatchObject({ status: command === "cancel" ? "cancelled" : command === "pause" ? "paused" : "completed", revision: 0 });
+    expect(complete.outputManifest?.sv.json).toMatchObject(await artifacts.digestFile(path.join(jobDir(job.id), "sv.json")));
+    if (command) {
+      expect(complete.outputs.sv).toEqual(["srt", "vtt", "txt", "json"]); expect(complete.outputManifest?.sv.mp3).toBeUndefined();
+      expect((await getFile(new Request("http://localhost/file?target=sv&format=mp3"), { params: Promise.resolve({ id: job.id }) })).status).toBe(404);
+    } else {
+      expect(complete.outputs.sv).toContain("mp3"); expect(complete.outputManifest?.sv.mp3).toBeDefined();
+      expect((await edit()).status).toBe(200); // Editing starts only after publication is finished.
+    }
   }, 30000);
   it("rejects fact-losing shortening even when its speech would fit the window", async () => {
     const fullText = "Jerry har tre titlar"; const shortenedText = "Han har titlar";
@@ -228,14 +272,33 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
   }, 30000);
   it("reports invalid media, missing credentials and failed TTS without a successful audio export", async () => {
     const invalid = await makeJob("wav", Buffer.from("not media")); await runJob(invalid.id); expect((await readJob(invalid.id)).status).toBe("failed");
-    const failed = await makeJob(); vi.mocked(providers.synthesize).mockRejectedValue(new AppError("Felaktig API-nyckel", 502)); await runJob(failed.id); expect(await readJob(failed.id)).toMatchObject({ status: "failed", outputs: {} });
-    vi.stubEnv("OPENAI_API_KEY", ""); const denied = await upload(new Request("http://localhost/jobs", { method: "POST", headers: { "x-file-name": "test.wav", "x-studio-options": encodeURIComponent(JSON.stringify({ targets: ["sv"], rights: true, cloudConsent: true })) }, body: new Uint8Array(await tone()) })); expect(denied.status).toBe(503);
+    const failed = await makeJob(); vi.mocked(providers.synthesize).mockRejectedValue(new AppError("Felaktig API-nyckel", 502)); await runJob(failed.id);
+    const result = await readJob(failed.id); expect(result).toMatchObject({ status: "failed", outputs: { sv: ["srt", "vtt", "txt", "json"] } });
+    expect(result.outputManifest?.sv.srt.sha256).toMatch(/^[0-9a-f]{64}$/);
+    const subtitles = await getFile(new Request("http://localhost/file?target=sv&format=srt"), { params: Promise.resolve({ id: failed.id }) });
+    expect(subtitles.status).toBe(200); expect(await subtitles.text()).toContain("Hej världen");
+    expect((await getFile(new Request("http://localhost/file?target=sv&format=mp3"), { params: Promise.resolve({ id: failed.id }) })).status).toBe(404);
+    vi.stubEnv("OPENAI_API_KEY", "");
+    await updateJob(failed.id, (j) => { j.status = "queued"; }); await runJob(failed.id);
+    expect(await readJob(failed.id)).toMatchObject({ status: "failed", outputs: { sv: ["srt", "vtt", "txt", "json"] } });
+    const denied = await upload(new Request("http://localhost/jobs", { method: "POST", headers: { "x-file-name": "test.wav", "x-studio-options": encodeURIComponent(JSON.stringify({ targets: ["sv"], rights: true, cloudConsent: true })) }, body: new Uint8Array(await tone()) })); expect(denied.status).toBe(503);
   }, 30000);
   it("rejects silent TTS rather than presenting silence as translated speech", async () => {
     vi.mocked(providers.synthesize).mockResolvedValue(Buffer.from(await wavBlob(new Int16Array(16000)).arrayBuffer()));
-    const job = await makeJob(); await runJob(job.id); expect(await readJob(job.id)).toMatchObject({ status: "failed", outputs: {} });
+    const job = await makeJob(); await runJob(job.id); expect(await readJob(job.id)).toMatchObject({ status: "failed", outputs: { sv: ["srt", "vtt", "txt", "json"] } });
     vi.mocked(providers.synthesize).mockImplementation(async () => tone());
     await updateJob(job.id, (j) => { j.status = "queued"; }); await runJob(job.id); expect((await readJob(job.id)).status).toBe("completed");
+  }, 30000);
+  it.each(["{interrupted", JSON.stringify({ language: "ar", segments: [{ start: "unsafe", text: "Invalid cached evidence" }] })])("recomputes a damaged ASR checkpoint without accepting its contents: %s", async (damaged) => {
+    vi.mocked(providers.transcribe).mockResolvedValue({ language: "ar", segments: [{ start: 0.5, end: 2, text: "مراجعة", uncertain: true }] });
+    const job = await makeJob(); await runJob(job.id);
+    const cache = (await readdir(jobDir(job.id))).find((name) => name.startsWith("asr-") && name.endsWith(".json"))!;
+    await writeFile(path.join(jobDir(job.id), cache), damaged);
+    await updateJob(job.id, (j) => { j.segments = []; j.rawSegments = []; j.status = "queued"; });
+    vi.mocked(providers.transcribe).mockClear(); await runJob(job.id);
+    expect(providers.transcribe).toHaveBeenCalledOnce();
+    expect(await readJob(job.id)).toMatchObject({ status: "review", reviewReason: "source", outputs: {}, segments: [{ text: "مراجعة" }] });
+    expect(providers.synthesize).not.toHaveBeenCalled();
   }, 30000);
   it("pauses and cancels in-flight AI requests through the persisted command", async () => {
     vi.mocked(providers.transcribe).mockImplementation(async (_file, _source, signal) => new Promise((_resolve, reject) => { signal.addEventListener("abort", () => reject(signal.reason), { once: true }); }));
@@ -289,6 +352,11 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     vi.mocked(providers.translate).mockResolvedValue([{ id: "s1", text: "Good morning" }]);
     const response = await live(new Request("http://localhost/api/translation/live", { method: "POST", headers: { "x-studio-options": encodeURIComponent(JSON.stringify({ source: "sv", targets: ["en"], rights: true, cloudConsent: true })) }, body: new Uint8Array(await tone(4)) }));
     expect(response.status).toBe(200); const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
-    expect(events.map((e) => e.type)).toEqual(["transcript", "translation", "audio"]); expect(events[1].text).toBe("Good morning"); expect(events[2].processingMs).toBeGreaterThan(0); expect(Buffer.from(events[2].audio, "base64").toString("ascii", 0, 4)).toBe("RIFF");
+    expect(events.map((e) => e.type)).toEqual(["timing", "transcript", "translation", "timing", "timing", "audio"]);
+    const timings = events.filter((event) => event.type === "timing");
+    expect(timings.map((event) => event.stage)).toEqual(["asr-final", "translation-final", "tts-ready"]);
+    for (const [index, event] of timings.entries()) { expect(event.durationMs).toBeGreaterThanOrEqual(0); expect(event.elapsedMs).toBeGreaterThanOrEqual(timings[index - 1]?.elapsedMs || 0); }
+    const content = events.filter((event) => event.type !== "timing");
+    expect(content[1].text).toBe("Good morning"); expect(content[2].processingMs).toBeGreaterThan(0); expect(Buffer.from(content[2].audio, "base64").toString("ascii", 0, 4)).toBe("RIFF");
   }, 30000);
 });

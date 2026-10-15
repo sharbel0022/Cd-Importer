@@ -1,15 +1,18 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { copyFile, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ffmpegPath } from "../ffmpeg";
 import { AppError } from "../errors";
 import { EXTENSIONS, type MediaInfo } from "./types";
+import { atomicJson } from "./store";
+import { digestFile, type CaptionRenderMetadata } from "./artifacts";
 
-export async function ffmpeg(args: string[], signal: AbortSignal, timeout = 600_000, onDiagnostic?: (block: string) => void): Promise<string> {
+export async function ffmpeg(args: string[], signal: AbortSignal, timeout = 600_000, onDiagnostic?: (block: string) => void, cwd?: string): Promise<string> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(/* turbopackIgnore: true */ ffmpegPath(), ["-nostdin", "-hide_banner", "-y", "-threads", "2", ...args], { shell: false, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(/* turbopackIgnore: true */ ffmpegPath(), ["-nostdin", "-hide_banner", "-y", "-threads", "2", ...args], { shell: false, windowsHide: true, stdio: ["ignore", "ignore", "pipe"], cwd });
     let diagnostic = ""; let expired = false;
     const cancel = () => child.kill("SIGKILL"); signal.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => { expired = true; cancel(); }, timeout);
@@ -22,6 +25,18 @@ export async function ffmpeg(args: string[], signal: AbortSignal, timeout = 600_
       else if (code !== 0) reject(new AppError("FFmpeg kunde inte läsa eller bearbeta filen. Kontrollera format och ljudspår.", 422));
       else resolve(diagnostic);
     });
+  });
+}
+let burnInCheck: Promise<boolean> | undefined;
+export function captionBurnInAvailable(): Promise<boolean> {
+  return burnInCheck ??= new Promise((resolve) => {
+    const child = spawn(/* turbopackIgnore: true */ ffmpegPath(), ["-hide_banner", "-filters"], { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let output = ""; let settled = false;
+    const finish = (available: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(available); };
+    const timer = setTimeout(() => { child.kill("SIGKILL"); finish(false); }, 15000);
+    const collect = (data: Buffer) => { output = (output + data.toString()).slice(-256000); };
+    child.stdout.on("data", collect); child.stderr.on("data", collect);
+    child.once("error", () => finish(false)); child.once("close", (code) => finish(code === 0 && /^\s*[.A-Z|]+\s+subtitles\s+V->V\s/mu.test(output)));
   });
 }
 export function inputArgs(file: string, extension = path.extname(file).slice(1)): string[] {
@@ -81,7 +96,7 @@ export async function waveform(file: string, _dir: string, signal: AbortSignal, 
   return result;
 }
 export async function speechDuration(file: string, signal: AbortSignal) {
-  const result = await ffmpeg([...inputArgs(file), "-af", "astats=metadata=0:reset=0", "-f", "null", "-"], signal, 120000);
+  const result = await ffmpeg(["-xerror", ...inputArgs(file), "-af", "astats=metadata=0:reset=0", "-f", "null", "-"], signal, 120000);
   const levels = [...result.matchAll(/RMS level dB:\s*(-?\d+(?:\.\d+)?|-inf)/g)].map((m) => Number(m[1]));
   if (!levels.length || levels.every((v) => !Number.isFinite(v) || v < -65)) throw new AppError("TTS-ljudet är tyst eller saknar hörbart tal. Jobbet stoppades.", 502);
   return (await inspect(file, signal)).duration;
@@ -93,6 +108,31 @@ export async function trimSpeech(file: string, signal: AbortSignal) {
   const edge = "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-55dB:start_silence=0.08";
   await ffmpeg([...inputArgs(file), "-af", `${edge},areverse,${edge},areverse`, "-c:a", "pcm_s16le", output], signal);
   return output;
+}
+export async function cachedSpeech(file: string, create: () => Promise<Buffer>, signal: AbortSignal) {
+  const trimmed = `${file}.trim.wav`;
+  const present = async (candidate: string) => stat(candidate).then((s) => s.size > 0).catch(() => false);
+  if (await present(trimmed)) {
+    try { return { file: trimmed, duration: await speechDuration(trimmed, signal) }; }
+    catch (error) { if (signal.aborted) throw error; await rm(trimmed, { force: true }); }
+  }
+  const temporary = `${file}.${randomUUID()}.tmp.wav`;
+  try {
+    if (await present(file)) {
+      try { await speechDuration(file, signal); }
+      catch (error) { if (signal.aborted) throw error; await rm(file, { force: true }); }
+    }
+    const fresh = !(await present(file));
+    if (fresh) { await writeFile(temporary, await create(), { flag: "wx" }); await speechDuration(temporary, signal); }
+    else await copyFile(file, temporary);
+    // Neither raw nor trimmed checkpoints are installed until decoding and
+    // audible-speech checks pass. An interrupted temporary file is never reused.
+    const result = await trimSpeech(temporary, signal);
+    const duration = await speechDuration(result, signal);
+    if (fresh) await rename(temporary, file);
+    await rename(result, trimmed);
+    return { file: trimmed, duration };
+  } finally { await rm(temporary, { force: true }); await rm(`${temporary}.trim.wav`, { force: true }); }
 }
 // Sparse float PCM, absolute sample positions: no accumulated concat drift.
 export async function createTimeline(file: string, duration: number) {
@@ -124,17 +164,20 @@ export async function placeSpeech(timeline: string, speech: string, start: numbe
     }
   } finally { await source.close(); await destination.close(); }
 }
-export async function renderTrack(dir: string, target: string, duration: number, original: string, mode: "replace" | "voiceover", background: string | undefined, signal: AbortSignal) {
+export interface MixOptions { speechGainDb?: number; originalGainDb?: number; backgroundGainDb?: number; fadeInSeconds?: number; fadeOutSeconds?: number; loudnessLufs?: number; normalize?: boolean }
+export async function renderTrack(dir: string, target: string, duration: number, original: string, mode: "replace" | "voiceover", background: string | undefined, signal: AbortSignal, mix: MixOptions = {}) {
   const output = path.join(dir, `${target}.wav`);
   const inputs = ["-f", "f32le", "-ar", "24000", "-ac", "1", "-i", path.join(dir, `${target}.pcm`)];
   const bed = background || (mode === "voiceover" ? original : undefined);
   if (bed) inputs.push(...inputArgs(bed));
-  const filters = (effect: string) => bed ? ["-filter_complex", `[0:a]aformat=channel_layouts=stereo[voice];[1:a]volume=${background ? "1" : "0.15"},aformat=channel_layouts=stereo[bed];[voice][bed]amix=inputs=2:duration=first:normalize=0,${effect}[out]`, "-map", "[out]"] : ["-af", effect];
-  const loudnorm = "loudnorm=I=-16:TP=-1.5:LRA=11";
+  const speechGain = `volume=${mix.speechGainDb ?? 0}dB`;
+  const bedGain = `volume=${background ? mix.backgroundGainDb ?? 0 : mix.originalGainDb ?? -16.4781748189}dB`;
+  const filters = (effect: string) => bed ? ["-filter_complex", `[0:a]${speechGain},aformat=channel_layouts=stereo[voice];[1:a]${bedGain},aformat=channel_layouts=stereo[bed];[voice][bed]amix=inputs=2:duration=first:normalize=0,${effect}[out]`, "-map", "[out]"] : ["-af", `${speechGain},${effect}`];
+  const loudnorm = `loudnorm=I=${mix.loudnessLufs ?? -16}:TP=-1.5:LRA=11`;
   // Measure the complete mix before applying one global normalization pass.
   // Single-pass dynamic loudnorm can overshoot badly on short, sparse clips.
-  const measurement = await ffmpeg([...inputs, ...filters(`${loudnorm}:print_format=json`), "-t", String(duration), "-f", "null", "-"], signal);
-  let normalization = loudnorm;
+  const measurement = mix.normalize === false ? "" : await ffmpeg([...inputs, ...filters(`${loudnorm}:print_format=json`), "-t", String(duration), "-f", "null", "-"], signal);
+  let normalization = mix.normalize === false ? "anull" : loudnorm;
   const raw = measurement.match(/\{\s*"input_i"[^}]+\}/u)?.[0];
   if (raw) {
     const values = JSON.parse(raw) as Record<string, string>;
@@ -143,10 +186,44 @@ export async function renderTrack(dir: string, target: string, duration: number,
   // loudnorm can negotiate 192 kHz and a nonzero starting PTS for real speech.
   // Normalize both the sample rate and sample clock before fixing the length;
   // output -t must not consume the filter's timestamp offset as missing audio.
-  const args = [...inputs, ...filters(`${normalization},alimiter=limit=0.95:level=0:latency=1,aresample=48000,asetpts=N/SR/TB,apad=whole_dur=${duration},atrim=duration=${duration}`)];
+  const fades = [mix.fadeInSeconds ? `afade=t=in:st=0:d=${Math.min(duration, mix.fadeInSeconds)}` : "", mix.fadeOutSeconds ? `afade=t=out:st=${Math.max(0, duration - mix.fadeOutSeconds)}:d=${Math.min(duration, mix.fadeOutSeconds)}` : ""].filter(Boolean).join(",");
+  const args = [...inputs, ...filters(`${normalization},${fades ? `${fades},` : ""}alimiter=limit=0.95:level=0:latency=1,aresample=48000,asetpts=N/SR/TB,apad=whole_dur=${duration},atrim=duration=${duration}`)];
   args.push("-t", String(duration), "-ar", "48000", "-c:a", "pcm_s16le", "-map_metadata", "-1", output);
   await ffmpeg(args, signal);
   for (const format of ["mp3", "m4a"] as const) await ffmpeg([...inputArgs(output), "-c:a", format === "mp3" ? "libmp3lame" : "aac", "-b:a", "192k", path.join(dir, `${target}.${format}`)], signal);
+}
+export interface CaptionStyle { font?: "Arial" | "Noto Sans" | "DejaVu Sans" | "Tahoma"; fontSize?: number; color?: string; outline?: number; position?: "top" | "bottom" }
+export function selectCaptionFont(requested: CaptionStyle["font"], text: string, platform: string, tahomaInstalled: boolean) {
+  const requestedFont = ["Arial", "Noto Sans", "DejaVu Sans", "Tahoma"].includes(requested || "") ? requested! : "Arial";
+  const fallback = platform === "win32" && tahomaInstalled && /\p{Script=Arabic}/u.test(text) && requestedFont !== "Tahoma";
+  return { requestedFont, actualFont: fallback ? "Tahoma" : requestedFont, ...(fallback ? { fallbackReason: "Windows Arabic shaping fallback: Tahoma preserves lam/alef ligatures and combining marks without changing subtitle text." } : {}) };
+}
+export async function renderCaptionedVideo(dir: string, target: string, duration: number, signal: AbortSignal, style: CaptionStyle = {}) {
+  if (!(await captionBurnInAvailable())) throw new AppError("FFmpeg saknar stöd för inbrända undertexter.", 503);
+  if (!/^[a-z]{2,3}$/u.test(target)) throw new AppError("Ogiltigt undertextspråk.", 422);
+  const color = /^#[0-9a-f]{6}$/iu.test(style.color || "") ? style.color!.slice(1) : "FFFFFF";
+  const assColor = `&H00${color.slice(4, 6)}${color.slice(2, 4)}${color.slice(0, 2)}`;
+  const subtitleFile = path.join(dir, `${target}.srt`);
+  const subtitleText = await readFile(subtitleFile, "utf8");
+  const tahomaInstalled = process.platform === "win32" && await stat("C:\\Windows\\Fonts\\tahoma.ttf").then((info) => info.isFile()).catch(() => false);
+  const selection = selectCaptionFont(style.font, subtitleText, process.platform, tahomaInstalled);
+  const diagnostic = await ffmpeg([...inputArgs(path.join(dir, `${target}.mp4`)), "-map", "0:v:0", "-t", "0", "-f", "null", "-"], signal, 30000);
+  const dimensions = diagnostic.match(/Video:[^\r\n]*?,\s*(\d+)x(\d+)(?:[ ,[]|$)/u);
+  if (!dimensions) throw new AppError("Videons bildmått kunde inte verifieras för undertexterna.", 502);
+  const width = Number(dimensions[1]); const height = Number(dimensions[2]);
+  const requestedFontSize = Math.max(12, Math.min(48, style.fontSize ?? 24));
+  // Preserve the existing height-relative font size, while making ASS layout
+  // coordinates explicit. MarginV is now an actual 5% of the output height.
+  const fontSize = requestedFontSize * height / 288; const marginPixels = Math.round(height * 0.05);
+  const outline = Math.max(0, Math.min(4, style.outline ?? 1));
+  const forceStyle = `PlayResX=${width},PlayResY=${height},FontName=${selection.actualFont},FontSize=${fontSize},PrimaryColour=${assColor},Outline=${outline},Alignment=${style.position === "top" ? 8 : 2},MarginV=${marginPixels}`;
+  // Only generated basenames enter the filter. cwd keeps Windows drive letters,
+  // apostrophes and other user-directory characters out of filter expressions.
+  const file = `${target}.mp4-captioned.mp4`;
+  await ffmpeg(["-i", `${target}.mp4`, "-vf", `subtitles=filename=${target}.srt:force_style='${forceStyle}'`, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-t", String(duration), "-movflags", "+faststart", file], signal, 600000, undefined, dir);
+  const metadata: CaptionRenderMetadata = { version: 1, generatedAt: new Date().toISOString(), ...selection, subtitleSha256: (await digestFile(subtitleFile)).sha256, frameWidth: width, frameHeight: height, marginPixels, marginPercent: 5, requestedFontSize, renderedFontSize: fontSize };
+  await atomicJson(path.join(dir, `${target}.caption-render.json`), metadata);
+  return path.join(dir, file);
 }
 export async function renderVideo(original: string, audio: string | undefined, output: string, duration: number, signal: AbortSignal, subtitle?: { file: string; language: string }) {
   const args = [...inputArgs(original)];

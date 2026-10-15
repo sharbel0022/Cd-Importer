@@ -12,7 +12,7 @@ const command = z.discriminatedUnion("action", [
   z.object({ action: z.enum(["pause", "resume", "cancel"]) }).strict(),
   z.object({ action: z.literal("approve-source"), ids: z.array(z.string().regex(/^s\d+$/)).min(1).max(6000).optional() }).strict(),
   z.object({ action: z.literal("regenerate"), target: z.string(), ids: z.array(z.string().regex(/^s\d+$/)).min(1).max(6000) }).strict(),
-  z.object({ action: z.literal("edit"), edits: z.array(z.object({ id: z.string().regex(/^s\d+$/), target: z.string(), text: z.string().trim().max(4000), start: z.number().nonnegative(), end: z.number().positive(), speaker: z.string().trim().min(1).max(80), original: z.string().trim().min(1).max(4000).optional() }).strict()).min(1).max(6000), speakerVoices: z.record(z.string().max(80), z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).optional() }).strict(),
+  z.object({ action: z.literal("edit"), revision: z.number().int().nonnegative().optional(), edits: z.array(z.object({ id: z.string().regex(/^s\d+$/), target: z.string(), text: z.string().trim().max(4000), start: z.number().nonnegative(), end: z.number().positive(), speaker: z.string().trim().min(1).max(80), original: z.string().trim().min(1).max(4000).optional() }).strict()).min(1).max(6000), speakerVoices: z.record(z.string().max(80), z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).optional() }).strict(),
 ]);
 export async function GET(_request: Request, ctx: Context) { try { return Response.json(await readJob((await ctx.params).id), { headers: { "Cache-Control": "no-store" } }); } catch (e) { return errorResponse(e); } }
 export async function PATCH(request: Request, ctx: Context) {
@@ -41,7 +41,7 @@ export async function PATCH(request: Request, ctx: Context) {
           t.generation = (t.generation || 0) + 1; t.timing = undefined;
           if (j.segmentOutputs?.[value.target]) delete j.segmentOutputs[value.target][id];
         }
-        j.revision++; j.outputs = {}; j.status = "queued"; j.command = undefined; j.error = undefined; j.message = "Genererar valda segment på nytt och skapar en ny komplett export. Oförändrat tal återanvänds.";
+        j.revision++; j.outputs = {}; j.outputManifest = {}; j.status = "queued"; j.command = undefined; j.error = undefined; j.message = "Genererar valda segment på nytt och skapar en ny komplett export. Oförändrat tal återanvänds.";
       } else if (value.action === "resume") {
         if (!["paused", "failed", "review"].includes(j.status)) throw new AppError("Jobbet kan inte återupptas i detta läge.", 409);
         if (pendingSourceSegments(j).length) throw new AppError("Granska och godkänn det osäkra transkriptet innan dubbning.", 409);
@@ -51,6 +51,7 @@ export async function PATCH(request: Request, ctx: Context) {
         else if (["queued", "paused", "review", "failed"].includes(j.status)) { j.status = value.action === "pause" ? "paused" : "cancelled"; j.command = undefined; j.message = value.action === "pause" ? "Pausat." : "Avbrutet."; }
         else throw new AppError("Jobbet är redan avslutat.", 409);
       } else if (value.action === "edit") {
+        if (value.revision !== undefined && value.revision !== j.revision) throw new AppError("Projektet har ändrats. Utkastet finns kvar; läs in den senaste versionen och jämför ändringarna.", 409);
         if (!["paused", "failed", "review", "completed"].includes(j.status)) throw new AppError("Pausa jobbet innan du redigerar.", 409);
         if (new Set(value.edits.map((e) => `${e.target}:${e.id}`)).size !== value.edits.length) throw new AppError("Samma segment kan inte ändras flera gånger i en begäran.");
         const sourceChanges = new Set<string>();
@@ -100,7 +101,7 @@ export async function PATCH(request: Request, ctx: Context) {
           j.translations[target] = j.segments.flatMap((s) => { const t = values.get(s.id); if (!t) return []; t.timing = undefined; return [t]; });
         }
         if (value.speakerVoices) { j.options.speakerVoices = value.speakerVoices; j.segmentOutputs = {}; }
-        j.revision++; j.outputs = {}; j.status = "paused"; j.stage = sourceChanges.size ? "translating" : "generating"; j.reviewReason = pendingSourceSegments(j).length ? "source" : undefined; j.metrics.reviewSegments = undefined; j.metrics.syncMaxDeviationMs = undefined; j.message = j.reviewReason === "source" ? "Ändringar sparade. Granska och godkänn transkriptet före dubbning." : "Ändringar sparade. Återuppta för att generera uppdaterade exporter.";
+        j.revision++; j.outputs = {}; j.outputManifest = {}; j.status = "paused"; j.stage = sourceChanges.size ? "translating" : "generating"; j.reviewReason = pendingSourceSegments(j).length ? "source" : undefined; j.metrics.reviewSegments = undefined; j.metrics.syncMaxDeviationMs = undefined; j.message = j.reviewReason === "source" ? "Ändringar sparade. Granska och godkänn transkriptet före dubbning." : "Ändringar sparade. Återuppta för att generera uppdaterade exporter.";
       }
     }), { headers: { "Cache-Control": "no-store" } });
   } catch (e) { return errorResponse(e); }

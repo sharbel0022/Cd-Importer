@@ -4,6 +4,7 @@ import gc
 import hashlib
 import json
 import re
+import sys
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ parser.add_argument("media", nargs="+", type=Path)
 parser.add_argument("--models", nargs="+", default=["medium", "large-v3"])
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root / 'local-ai'))
+from asr_models import decoding_options, settings_report
 directory = root / "test-results" / ("asr-comparison-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
 directory.mkdir(parents=True, exist_ok=True)
 
@@ -43,10 +46,9 @@ for model_name in args.models:
     load_seconds = time.monotonic() - started
     for media in args.media:
         started = time.monotonic()
-        segments, info = model.transcribe(str(media), language=None, beam_size=5,
-            temperature=(0, .2, .4, .6, .8, 1), condition_on_previous_text=True,
-            vad_filter=True, word_timestamps=True, language_detection_segments=3,
-            vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 400})
+        # Identical acoustic settings to the gateway; never compare a different
+        # previous-text policy while reporting it as the production decoder.
+        segments, info = model.transcribe(str(media), **decoding_options(''))
         raw = [{"start": s.start, "end": s.end, "text": s.text, "avg_logprob": s.avg_logprob,
                 "no_speech_prob": s.no_speech_prob, "temperature": s.temperature,
                 "compression_ratio": s.compression_ratio,
@@ -59,7 +61,7 @@ for model_name in args.models:
                   "language": info.language, "language_probability": info.language_probability,
                   "duration": info.duration, "loadSeconds": load_seconds, "inferenceSeconds": time.monotonic() - started,
                   "reference": reference, "wordErrorRate": wer(reference, text) if reference else None,
-                  "text": text, "segments": raw, "prompt": None}
+                  "text": text, "segments": raw, "prompt": None, "settings": settings_report('', 'cpu', 'int8')}
         results.append(result)
         (directory / "report.json").write_text(json.dumps({"scope": "Raw unprompted acoustic ASR comparison, CPU int8. No reference for WhatsApp: accuracy cannot be scored.", "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({k: result[k] for k in ("model", "media", "language", "wordErrorRate", "inferenceSeconds")}), flush=True)
