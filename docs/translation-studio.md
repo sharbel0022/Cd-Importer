@@ -1,5 +1,7 @@
 # AI Translation Studio
 
+The 2026-10-15 extension is documented in [Ultimate Studio progress](ultimate-studio-progress.md), with the [baseline gap analysis](ultimate-studio-gap-analysis.md), [model evaluation](ultimate-studio-model-evaluation.md) and [hosted deployment boundary](ultimate-studio-hosted-architecture.md). Translation now offers Faithful, Natural, Professional and Literal modes, reusable browser glossaries, installed-model segment ASR comparisons, recoverable editor drafts and project copies. Optional mixer settings and bilingual/styled burned captions produce real exports; each new artifact has a revision/SHA256 manifest. This remains a local single-user edition; lip sync, verified voice cloning and hosted multi-user operation are not completed.
+
 ## Status och verifiering
 
 Engelska (US) är nu standard. Aktuell implementation och verkliga testresultat finns i [Faithful translation verification](faithful-translation-verification.md). Äldre resultat finns i [English-priority verification](english-translation-verification.md). Tidigare svenska prov nedan är historiska; de är inget godkännande av nya modeller eller WhatsApp-videon.
