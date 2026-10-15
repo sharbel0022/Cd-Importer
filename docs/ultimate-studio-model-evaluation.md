@@ -1,5 +1,7 @@
 # Model/runtime evaluation – 2026-10-15
 
+Follow-up: [GPU and real AI quality verification](gpu-ai-quality-verification.md) records the subsequently installed isolated RTX 5070 and Chatterbox environments, actual ASR/TTS/separation measurements, failed language probes and remaining human/model-access gates. The inventory below is the earlier baseline; the original CPU environment remains intact. No cloning, human MOS, two-speaker diarization or approved WhatsApp dubbing is implied by the new installation.
+
 These are implementation candidates and concrete blockers, not quality endorsements or completed feature claims. Primary model documentation was checked on the audit date. No gated conditions were accepted, external service account created, paid API used, or shared Python environment modified.
 
 ## Installed and measured

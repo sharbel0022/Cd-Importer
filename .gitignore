@@ -37,6 +37,8 @@ public/ffmpeg/
 .sites-runtime/
 .translation-data/
 local-ai/.venv/
+local-ai/.venv-gpu/
+local-ai/.venv-chatterbox/
 local-ai/__pycache__/
 local-ai/models/
 local-ai/fixtures/

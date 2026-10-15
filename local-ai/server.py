@@ -176,11 +176,14 @@ def transcribe_sync(file, language, context="", model_id=""):
                 device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
             except RuntimeError:
                 device = "cpu"
+        require_gpu = os.getenv('WHISPER_REQUIRE_GPU') == 'true'
+        if require_gpu and device != 'cuda':
+            raise RuntimeError('This gateway requires CUDA; CPU fallback is disabled.')
         try:
             compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8" if device == "cpu" else "float16")
             whisper = WhisperModel(selected['model'], device=device, compute_type=compute_type, cpu_threads=4, local_files_only=True)
         except (RuntimeError, ValueError):
-            if device != "cuda":
+            if device != "cuda" or require_gpu:
                 raise
             print("Whisper CUDA initialization failed; using CPU int8.", flush=True)
             device, compute_type = 'cpu', 'int8'

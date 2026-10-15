@@ -59,6 +59,8 @@ Studion använder nu **Faithful Translation** och **English (US)** som standard.
 
 Studion erbjuder även English (UK), riktiga röstprov, taltempo, jämförelsespelare och granskning av osäkra transkript. Se [den aktuella engelska verifieringen och Windows-kommandon](docs/english-translation-verification.md) för verkliga exporter, genomförda rättningar och kvarstående kvalitetsgränser. WhatsApp-videon ligger kvar för granskning enligt användarens val.
 
+Separat RTX 5070-miljö, verkliga CPU/GPU-mätningar, Chatterbox V3-prov och Demucs-separering finns nu dokumenterade i [GPU och verklig AI-kvalitet](docs/gpu-ai-quality-verification.md). CPU-miljön är bevarad. Mänsklig lyssning, WhatsApp-avskrift/godkännande, arabisk TTS-kvalitet, röstbevarande och gated diarization är fortfarande ofärdiga. Dessa lokala modeller finns inte på Sites.
+
 ## CD Importer Studio (ljud och noter)
 
 Den nya studioprototypen nås via **CD Importer Studio** i sidomenyn eller `/studio/index.html`. Den innehåller lokal ljudredigering, notredigering, projektfiler och undertexter. AI-backend och videorendering återstår. Se [funktioner och begränsningar](docs/studio.md). Kör `node scripts/studio-check.cjs` för studions format- och redigeringskontroller.

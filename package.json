@@ -24,11 +24,13 @@
     "test:sites": "node --import tsx scripts/sites-check.mjs",
     "studio:worker": "node --env-file-if-exists=.env.local --import tsx scripts/translation-worker.ts",
     "studio:gateway": "node --env-file-if-exists=.env.local scripts/translation-gateway.mjs",
+    "studio:gateway:gpu": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.gpu.local scripts/translation-gpu-gateway.mjs",
+    "test:translation:gpu": "node --env-file-if-exists=.env.local --env-file-if-exists=.env.gpu.local scripts/check-gpu-gateway.mjs",
     "studio:configure-local": "node scripts/configure-local-ai.mjs",
     "test:translation:live": "node --env-file-if-exists=.env.local --import tsx scripts/translation-live-check.ts",
     "test:translation:local": "node --env-file-if-exists=.env.local --import tsx scripts/translation-local-check.ts",
     "test:translation:ui": "node --import tsx scripts/translation-ui-check.mjs",
-    "lint": "eslint src/lib/translation src/components/translation-*.tsx src/app/translation src/app/api/translation scripts/translation-worker.ts scripts/translation-live-check.ts scripts/translation-local-check.ts scripts/review-asr-comparison.ts scripts/translation-fidelity-check.ts",
+    "lint": "eslint src/lib/translation src/components/translation-*.tsx src/app/translation src/app/api/translation scripts/translation-worker.ts scripts/translation-live-check.ts scripts/translation-local-check.ts scripts/review-asr-comparison.ts scripts/translation-fidelity-check.ts scripts/check-gpu-gateway.mjs scripts/translation-gpu-gateway.mjs scripts/check-ai-listening.mjs scripts/serve-ai-review.mjs",
     "test:translation:fidelity": "node --env-file-if-exists=.env.local --import tsx scripts/translation-fidelity-check.ts"
   },
   "dependencies": {
