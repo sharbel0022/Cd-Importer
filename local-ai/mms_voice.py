@@ -7,7 +7,8 @@ tokenizer = None
 
 
 def available():
-    return os.getenv('STUDIO_MMS_ENABLED') == 'true' and Path(os.getenv('MMS_MODEL', '')).joinpath('config.json').is_file()
+    path = Path(os.getenv('MMS_MODEL', ''))
+    return os.getenv('STUDIO_MMS_ENABLED') == 'true' and all(path.joinpath(name).is_file() and path.joinpath(name).stat().st_size > 0 for name in ('config.json', 'model.safetensors', 'vocab.json'))
 
 
 def synthesize(text, destination):

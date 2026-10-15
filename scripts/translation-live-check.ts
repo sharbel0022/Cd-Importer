@@ -13,9 +13,9 @@ if (!media) { console.log("SKIP: Ange STUDIO_TEST_MEDIA till en verklig talfil. 
 const reportDir = path.resolve("test-results", `translation-real-${randomUUID()}`); await mkdir(reportDir, { recursive: true });
 process.env.STUDIO_DATA_DIR = path.join(reportDir, "jobs");
 const caps = await capabilities(); if (!caps.ready) throw new Error(caps.message);
-const target = process.env.STUDIO_TEST_TARGET || "sv";
+const target = process.env.STUDIO_TEST_TARGET || "en";
 const bytes = await readFile(media);
-const response = await POST(new Request("http://localhost/api/translation/jobs", { method: "POST", headers: { "x-file-name": encodeURIComponent(path.basename(media)), "x-studio-options": encodeURIComponent(JSON.stringify({ source: process.env.STUDIO_TEST_SOURCE || "auto", targets: [target], rights: true, cloudConsent: caps.cloud, voice: caps.voices[0], diarize: process.env.STUDIO_TEST_DIARIZE === "true" })) }, body: new Uint8Array(bytes) }));
+const response = await POST(new Request("http://localhost/api/translation/jobs", { method: "POST", headers: { "x-file-name": encodeURIComponent(path.basename(media)), "x-studio-options": encodeURIComponent(JSON.stringify({ source: process.env.STUDIO_TEST_SOURCE || "auto", targets: [target], rights: true, cloudConsent: caps.cloud, voice: process.env.STUDIO_TEST_VOICE || "auto", diarize: process.env.STUDIO_TEST_DIARIZE === "true" })) }, body: new Uint8Array(bytes) }));
 if (!response.ok) throw new Error((await response.json()).error);
 const submitted = await response.json(); await runJob(submitted.id); const job = await readJob(submitted.id);
 function tokens(text: string) { return text.normalize("NFKC").toLowerCase().replace(/[\p{P}\p{S}\p{M}]/gu, " ").split(/\s+/).filter(Boolean); }
@@ -31,7 +31,9 @@ if (job.outputs[target]?.includes("wav")) {
   const signal = new AbortController().signal; const sample = path.join(reportDir, "roundtrip.wav");
   const first = job.segments.find((s) => s.end <= 230) || job.segments[0];
   await chunk(path.join(jobDir(job.id), `${target}.wav`), sample, first.start, Math.min(240, job.media!.duration - first.start), signal);
-  const heard = await transcribe(sample, target, signal); const actual = new Set(tokens(heard.segments.map((s) => s.text).join(" ")));
+  const heard = await transcribe(sample, "auto", signal); const actual = new Set(tokens(heard.segments.map((s) => s.text).join(" ")));
+  await writeFile(path.join(reportDir, "roundtrip-transcription.json"), JSON.stringify(heard, null, 2));
+  if (heard.language !== target) throw new Error(`Exportens språk identifierades som ${heard.language}, förväntat ${target}.`);
   const expected = tokens(job.translations[target].filter((t) => { const s = job.segments.find((s) => s.id === t.id)!; return s.start >= first.start && s.end <= first.start + 240; }).map((s) => s.text).join(" "));
   roundTripRecall = expected.filter((t) => actual.has(t)).length / Math.max(1, expected.length);
   await ffmpeg([...inputArgs(path.join(jobDir(job.id), `${target}.wav`)), "-af", "astats=metadata=0:reset=0", "-f", "null", "-"], signal);

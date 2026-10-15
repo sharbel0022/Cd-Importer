@@ -54,9 +54,19 @@ def apply_corrections(result, candidates):
             segment.setdefault('raw_text', original)
             segment['text'] = candidate.strip()
             segment['linguistic_correction'] = True
-            # One-to-one lexical edits preserve the measured word timestamps.
-            for word, token in zip(segment.get('words', []), words(candidate)):
-                word['word'] = token
+            segment['uncertain'] = True
+            segment.setdefault('quality_reasons', []).append('linguistic_correction_requires_review')
+            result['review_required'] = True
+            # Only one-to-one tokens can retain the measured word timestamps.
+            # Keep acoustic word scores/raw spelling when inferring grammar.
+            measured = segment.get('words', [])
+            corrected_tokens = words(candidate)
+            if len(measured) == len(corrected_tokens):
+                for word, token in zip(measured, corrected_tokens):
+                    if words(word['word']) != [token]:
+                        word.setdefault('raw_word', word['word'])
+                        word['word'] = token
+                        word['uncertain'] = True
     return result
 
 

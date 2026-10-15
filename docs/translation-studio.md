@@ -2,6 +2,8 @@
 
 ## Status och verifiering
 
+Engelska (US) är nu standard. Aktuella kodändringar, installerade engelska röster och separat verklig verifiering redovisas i [English-priority verification](english-translation-verification.md). Tidigare svenska prov nedan är historiska; de är inget godkännande av nya modeller eller WhatsApp-videon.
+
 Studion är en riktig implementation av ingestion, provideranrop, tidsatta segment, talgenerering, synkronisering och export. Den körs i **lokala Next.js-versionen**, på `/translation`. Befintlig musikhantering, CD-konvertering, inspelning och notredigering finns kvar. Inventeringen före kodändring finns i [translation-architecture.md](translation-architecture.md).
 
 **Lokala basmodeller har nu installerats och testats med verkliga anrop.** Ett mänskligt arabiskt talprov gav verifierad svensk WAV/MP3/M4A efter en dokumenterad timingkorrigering. Se [resultat och begränsningar](local-ai-verification.md) samt [den lokala installationen](local-ai-setup.md). Detta är en kontroll av korta prov, inte en generell kvalitetsgaranti. Deterministiska AI-fixturer används fortfarande enbart i enhets-/UI-tester; produktionsappen har ingen sådan fallback.
@@ -87,15 +89,15 @@ Valbar pyannote kräver installerat `pyannote.audio`, `PYANNOTE_MODEL` och event
 
 ## Synkronisering, mixning och export
 
-Långa källor transkriberas i oberoende, diskbaserade block om högst 240 sekunder. Gränser kan dela ord/meningar; meningskontext från föregående segment används vid översättning. Whisper skapar segment och ordtider; språklig korrekthet måste granskas. En översättning per ID valideras. Talare och tidsfönster kommer från serverns sparade segment.
+Långa källor transkriberas i diskbaserade block, normalt omkring 60 sekunder (konfigurerbart 10–120 sekunder). Workern söker en närliggande tyst gräns; en ofrånkomlig gräns i tal markeras för granskning. Orimliga mellanrum i ordtider markeras även när ordsannolikheterna är höga. Whisper skapar segment och ordtider; dessa är modellskattningar och måste granskas när de flaggas. En översättning per ID valideras. Talare och tidsfönster kommer från serverns sparade segment.
 
-TTS-ljudet avkodas och mäts. Tyst eller ogiltigt WAV-ljud avvisas. En för lång översättning får ett försök till kortare formulering. FFmpeg `atempo` ändrar tempo utan att medvetet ändra tonhöjd, begränsat till **0,85–1,20×**. Detta är pitchbevarande tidssträckning, inte en garanti om studiokvalitet eller identisk intonation. Om kvarvarande överskridande är mer än 40 ms markeras segmentet för granskning och slutliga ljud-/videoexporter publiceras inte. SRT/VTT/TXT/JSON kan hämtas för rättning. Ingen tyst klippning av orimligt långa meningar presenteras som färdig dubbning.
+TTS-ljudet avkodas och mäts. Tyst eller ogiltigt WAV-ljud avvisas. För lång text får upp till tre faktakontrollerade förkortningsförsök. FFmpeg `atempo` föredrar **0,85–1,20×**; en begränsad reserv upp till 1,40× tillåts bara inom ordtäthetsgränsen. Den verkliga samplelängden kontrolleras innan tal skrivs till tidslinjen. Tal som inte ryms utan överlappning eller avklippning ger granskning och saknar godkända slutexporter. SRT/VTT/TXT/JSON kan hämtas för rättning. Tempokontrollen är ingen garanti för studiokvalitet eller identisk intonation.
 
-Godkända segment placeras på absoluta 24 kHz-samplepositioner i ett diskbaserat floatspår. Pauser mellan segment lämnas kvar och fel ackumuleras inte genom concat. Spår mixas, limiteras och exporteras till 48 kHz WAV, MP3 och M4A. Limiteringen förhindrar klippning men är inte ett uppmätt perceptuellt ljudkvalitetsbetyg.
+Godkända segment placeras på absoluta 24 kHz-samplepositioner i ett diskbaserat floatspår. Pauser mellan segment lämnas kvar och fel ackumuleras inte genom concat. Hela mixen mäts före global loudness-normalisering mot −16 LUFS och limitering. Sampleklockan återställs och utdata får exakt originallängd före 48 kHz WAV, MP3 och M4A. Detta är ingen MOS-mätning av naturlighet.
 
 - **Ersätt tal:** det nya talspåret ersätter hela originalljudet om separation inte är vald. Appen säger uttryckligen att musik/effekter då försvinner.
 - **Voice-over:** originalljudet spelas på 15 procent under AI-talet.
-- **Original + undertexter:** ingen TTS körs; originalljudet behålls och separata undertextfiler skapas.
+- **Original + undertexter:** ingen TTS körs; originalljudets innehåll behålls och separata SRT/VTT-filer skapas. MP4 innehåller dessutom ett valbart undertextspår. Läget fungerar när ASR/översättning finns även om TTS saknas.
 - **Demucs:** valbart `demucs` måste installeras och `STUDIO_DEMUCS_ENABLED=true` sättas i gatewayen och i `.env.local`. Separation är en uppskattning, med möjliga talrester och artefakter. Ingen kvalitetsgaranti visas. Molnproviders kan kombineras med lokal separering.
 
 Exporter: MP3, WAV, M4A, MP4 för videokällor, SRT, VTT, TXT med original/översättning samt JSON med segment, ord, talare, varningar och mätvärden. MP4 kopierar videobitströmmen och kodar det valda ljudet som AAC. Om videokodeken inte går att lägga i MP4 blir jobbet ett tydligt fel; upplösningen sänks inte som dold fallback. Bildfrekvens och upplösning bevaras vid lyckad stream copy. Ingen läppsynk, videoklippning eller inbränning av undertexter implementeras. MKV/MOV-källor kan fungera i FFmpeg även när webbläsaren inte kan förhandsvisa originalet.

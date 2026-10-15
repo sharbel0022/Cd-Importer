@@ -55,6 +55,8 @@ Den lokala Next.js-versionen har nu en separat översättningsstudio på `/trans
 
 På den lokalt verifierade datorn är modeller nu installerade. Se [starta den lokala AI-kedjan](docs/local-ai-setup.md) och [riktigt arabiskt→svenskt talprov med exporter](docs/local-ai-verification.md). Modellvikterna och den privata konfigurationen ingår inte i Git.
 
+Studion väljer nu **English (US)** som standard, med UK-variant, riktiga röstprov, taltempo, jämförelsespelare och granskning av osäkra transkript. Se [den aktuella engelska verifieringen och Windows-kommandon](docs/english-translation-verification.md) för verkliga exporter, genomförda rättningar och kvarstående kvalitetsgränser. WhatsApp-videon ligger kvar för granskning enligt användarens val.
+
 ## CD Importer Studio (ljud och noter)
 
 Den nya studioprototypen nås via **CD Importer Studio** i sidomenyn eller `/studio/index.html`. Den innehåller lokal ljudredigering, notredigering, projektfiler och undertexter. AI-backend och videorendering återstår. Se [funktioner och begränsningar](docs/studio.md). Kör `node scripts/studio-check.cjs` för studions format- och redigeringskontroller.

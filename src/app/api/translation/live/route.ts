@@ -1,11 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AppError, errorResponse } from "@/lib/errors";
 import { guardRequest, limitedBody } from "@/lib/request";
-import { normalize, inspect } from "@/lib/translation/media";
+import { ffmpeg, inputArgs, normalize, inspect } from "@/lib/translation/media";
 import { optionsSchema } from "@/lib/translation/types";
-import { synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
+import { resolveVoice, synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 const globalLive = globalThis as typeof globalThis & { studioLiveActive?: number };
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const parsed = optionsSchema.safeParse(raw); if (!parsed.success) throw new AppError("Välj giltiga språk och bekräfta dina rättigheter.");
     const options = parsed.data;
     if (options.targets.length !== 1 || options.preserveVoice || options.diarize || options.preserveBackground) throw new AppError("Live använder ett målspråk och en AI-standardröst.");
-    await validateOptions(options);
+    const caps = await validateOptions(options);
     if ((globalLive.studioLiveActive || 0) >= 2) throw new AppError("Live-bearbetningen är upptagen.", 429);
     globalLive.studioLiveActive = (globalLive.studioLiveActive || 0) + 1;
     let bytes: Buffer;
@@ -33,16 +33,19 @@ export async function POST(request: Request) {
             await writeFile(source, bytes); const info = await inspect(source, signal); if (info.duration > 12) throw new AppError("Ett liveblock får vara högst 12 sekunder.", 413);
             await normalize(source, normalized, signal, 12);
             const result = await transcribe(normalized, options.source, signal);
+            if (result.segments.some((s) => s.uncertain || (s.avg_logprob !== undefined && s.avg_logprob < -1) || (s.no_speech_prob || 0) > 0.5)) throw new AppError("Talet är osäkert. Spela in en fil och granska transkriptet före dubbning.", 422);
             const segments = result.segments.filter((s) => s.text.trim() && (s.no_speech_prob || 0) <= 0.8).map((s, n) => ({ id: `s${n + 1}`, start: s.start, end: s.end, text: s.text, speaker: "unknown" }));
             if (!segments.length) { send({ type: "silence", processingMs: Date.now() - started }); return; }
             send({ type: "transcript", text: segments.map((s) => s.text).join(" "), language: result.language });
             const translated = await translate(segments, options.targets[0], options, decodeURIComponent(request.headers.get("x-studio-context") || "").slice(-2000), signal);
             const text = translated.map((s) => s.text).join(" "); if (text.length > 4000) throw new AppError("Live-översättningen blev för lång.", 422);
             send({ type: "translation", text });
-            const audio = await synthesize(text, options.targets[0], options.voice, signal);
+            const audio = await synthesize(text, options.targets[0], resolveVoice(options.targets[0], options, caps), signal, undefined, options);
             const output = path.join(dir, "speech.wav"); await writeFile(output, audio);
             const { speechDuration } = await import("@/lib/translation/media"); await speechDuration(output, signal);
-            send({ type: "audio", audio: audio.toString("base64"), processingMs: Date.now() - started });
+            const rendered = path.join(dir, "playback.wav");
+            await ffmpeg([...inputArgs(output), "-af", `atempo=${options.speechRate},loudnorm=I=-16:TP=-1.5:LRA=11`, "-c:a", "pcm_s16le", rendered], signal);
+            send({ type: "audio", audio: (await readFile(rendered)).toString("base64"), processingMs: Date.now() - started });
           } catch (e) { if (!signal.aborted) send({ type: "error", error: e instanceof AppError ? e.message : "Live-bearbetningen misslyckades." }); }
           finally { globalLive.studioLiveActive = Math.max(0, (globalLive.studioLiveActive || 1) - 1); if (dir) await rm(dir, { recursive: true, force: true }); if (!signal.aborted) controller.close(); }
         })();

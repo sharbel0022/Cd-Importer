@@ -8,7 +8,7 @@ import { PATCH as control } from "@/app/api/translation/jobs/[id]/route";
 import { GET as getFile } from "@/app/api/translation/jobs/[id]/file/route";
 import { runJob } from "@/lib/translation/pipeline";
 import { jobDir, readJob, updateJob } from "@/lib/translation/store";
-import { createTimeline, ffmpeg, inspect, placeSpeech } from "@/lib/translation/media";
+import { createTimeline, ffmpeg, inspect, placeSpeech, renderTrack } from "@/lib/translation/media";
 import { wavBlob } from "@/lib/translation/client";
 import type { Job } from "@/lib/translation/types";
 import { AppError } from "@/lib/errors";
@@ -41,6 +41,10 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     await ffmpeg(["-i", path.join(jobDir(job.id), "sv.wav"), "-ss", "0.6", "-t", "0.2", "-ar", "16000", "-ac", "1", "-f", "s16le", path.join(root, "decoded.pcm")], new AbortController().signal);
     const pcm = await readFile(path.join(root, "decoded.pcm")); let crossings = 0; for (let i = 2; i < pcm.length; i += 2) if (pcm.readInt16LE(i - 2) <= 0 && pcm.readInt16LE(i) > 0) crossings++;
     expect(crossings).toBeGreaterThan(120); // New 880 Hz fixture, not original 220 Hz.
+    const loudness = await ffmpeg(["-i", path.join(jobDir(job.id), "sv.wav"), "-af", "ebur128=peak=true", "-f", "null", "-"], new AbortController().signal);
+    const measuredLufs = [...loudness.matchAll(/I:\s*(-?\d+(?:\.\d+)?) LUFS/gu)].at(-1);
+    expect(Number(measuredLufs?.[1])).toBeCloseTo(-16, 0);
+    expect(Math.max(...Array.from({ length: pcm.length / 2 }, (_, i) => Math.abs(pcm.readInt16LE(i * 2)) / 32768))).toBeLessThan(0.95);
     expect(await readFile(path.join(jobDir(job.id), "sv.srt"), "utf8")).toContain("Hej världen");
     const response = await getFile(new Request(`http://localhost/file?target=sv&format=mp3`, { headers: { Range: "bytes=0-99" } }), { params: Promise.resolve({ id: job.id }) }); expect(response.status).toBe(206); expect((await response.arrayBuffer()).byteLength).toBe(100);
     expect(result.metrics.processingMs).toBeGreaterThan(0); expect(result.metrics.syncMaxDeviationMs).toBe(0);
@@ -52,6 +56,21 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     const decoded = path.join(root, "video-decoded.pcm"); await ffmpeg(["-i", path.join(jobDir(job.id), "en.mp4"), "-ss", "0.6", "-t", "0.2", "-ar", "16000", "-ac", "1", "-f", "s16le", decoded], new AbortController().signal);
     const pcm = await readFile(decoded); let crossings = 0; for (let i = 2; i < pcm.length; i += 2) if (pcm.readInt16LE(i - 2) <= 0 && pcm.readInt16LE(i) > 0) crossings++;
     expect(crossings).toBeGreaterThan(120); // MP4 really contains new fixture voice, not original audio.
+  }, 30000);
+  it("subtitles mode retains original MP4 audio and muxes selectable English captions without TTS", async () => {
+    const signal = new AbortController().signal; const input = path.join(root, "subtitles-input.mp4");
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=3", "-f", "lavfi", "-i", "sine=frequency=220:duration=3", "-c:v", "libx264", "-c:a", "aac", "-shortest", input], signal);
+    vi.mocked(providers.translate).mockResolvedValue([{ id: "s1", text: "Hello world" }]);
+    const job = await makeJob("mp4", await readFile(input), { targets: ["en"], mode: "subtitles" }); await runJob(job.id);
+    const result = await readJob(job.id); expect(result.status, result.error).toBe("completed"); expect(providers.synthesize).not.toHaveBeenCalled();
+    const output = path.join(jobDir(job.id), "en.mp4");
+    expect(await inspect(output, signal)).toMatchObject({ video: true, duration: 3 });
+    const captions = path.join(root, "extracted-captions.srt");
+    await ffmpeg(["-i", output, "-map", "0:s:0", "-c:s", "srt", captions], signal);
+    expect(await readFile(captions, "utf8")).toContain("Hello world");
+    const decoded = path.join(root, "original-audio.pcm"); await ffmpeg(["-i", output, "-ss", "0.6", "-t", "0.2", "-ar", "16000", "-ac", "1", "-f", "s16le", decoded], signal);
+    const pcm = await readFile(decoded); let crossings = 0; for (let i = 2; i < pcm.length; i += 2) if (pcm.readInt16LE(i - 2) <= 0 && pcm.readInt16LE(i) > 0) crossings++;
+    expect(crossings).toBeGreaterThan(35); expect(crossings).toBeLessThan(55);
   }, 30000);
   it("uses consistent distinct voices for two diarized speakers", async () => {
     vi.mocked(providers.transcribe).mockResolvedValue({ language: "arabic", segments: [{ start: 0, end: 1.4, text: "واحد" }, { start: 1.5, end: 3, text: "اثنان" }] });
@@ -106,6 +125,51 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     const exportedText = await readFile(path.join(jobDir(job.id), "sv.txt"), "utf8");
     expect(exportedText).toContain(fullText); expect(exportedText).not.toContain(shortenedText);
   }, 30000);
+  it("protects English names, written counts and negation during timing retries", async () => {
+    const fullText = "Jerry did not win three titles";
+    vi.mocked(providers.translate).mockImplementation(async (segments, _target, _options, _context, _signal, shorten) => segments.map((s) => ({ id: s.id, text: shorten ? "He won titles" : fullText })));
+    vi.mocked(providers.synthesize).mockImplementation(async (text) => tone(text === fullText ? 4 : 0.5));
+    const job = await makeJob("wav", undefined, { targets: ["en"] }); await runJob(job.id);
+    const result = await readJob(job.id);
+    expect(result.status).toBe("review"); expect(result.reviewReason).toBe("timing");
+    expect(result.translations.en[0].text).toBe(fullText);
+    expect(vi.mocked(providers.synthesize).mock.calls.map((c) => c[0])).toEqual([fullText]);
+    expect(result.outputs.en).not.toContain("mp3");
+  }, 30000);
+  it("requires source review before translating uncertain words and resumes after approval", async () => {
+    vi.mocked(providers.transcribe).mockResolvedValue({ language: "ar", language_probability: 0.95, segments: [{ start: 0.5, end: 2, text: "مرحبا", no_speech_prob: 0.9, uncertain: true, quality_reasons: ["low_confidence"], words: [{ start: 0.5, end: 2, word: "مرحبا", probability: 0.3, uncertain: true }] }] });
+    const job = await makeJob("wav", undefined, { targets: ["en"] }); await runJob(job.id);
+    expect(await readJob(job.id)).toMatchObject({ status: "review", reviewReason: "source", outputs: {}, sourceConfidence: 0.95, segments: [{ text: "مرحبا", uncertain: true, qualityReasons: ["low_confidence", "possible_background_noise_or_silence"], words: [{ probability: 0.3 }] }] });
+    expect(providers.translate).not.toHaveBeenCalled(); expect(providers.synthesize).not.toHaveBeenCalled();
+    const approved = await control(new Request("http://localhost/control", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "approve-source" }) }), { params: Promise.resolve({ id: job.id }) });
+    expect(approved.status, await approved.clone().text()).toBe(200);
+    await runJob(job.id); expect((await readJob(job.id)).status).toBe("completed");
+  }, 30000);
+  it("reuses untouched translation and speech segments when only one source segment changes", async () => {
+    vi.mocked(providers.transcribe).mockResolvedValue({ language: "ar", segments: [{ start: 0, end: 1, text: "مرحبا." }, { start: 1.5, end: 3, text: "وداعا." }] });
+    vi.mocked(providers.translate).mockImplementation(async (segments) => segments.map((s) => ({ id: s.id, text: s.text.includes("جديد") ? "Updated sentence" : `Translation ${s.id}` })));
+    const job = await makeJob("wav", undefined, { targets: ["en"] }); await runJob(job.id); expect((await readJob(job.id)).status).toBe("completed");
+    vi.mocked(providers.translate).mockClear(); vi.mocked(providers.synthesize).mockClear();
+    const edit = await control(new Request("http://localhost/control", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "edit", edits: [{ id: "s1", target: "en", text: "Translation s1", original: "نص جديد.", start: 0, end: 1, speaker: "unknown" }] }) }), { params: Promise.resolve({ id: job.id }) });
+    expect(edit.status, await edit.clone().text()).toBe(200);
+    await updateJob(job.id, (j) => { j.status = "queued"; }); await runJob(job.id);
+    const result = await readJob(job.id); expect(result.status, result.error).toBe("completed");
+    expect(vi.mocked(providers.translate).mock.calls.flatMap((c) => c[0].map((s) => s.id))).toEqual(["s1"]);
+    expect(vi.mocked(providers.synthesize).mock.calls.map((c) => c[0])).toEqual(["Updated sentence"]);
+    expect(result.translations.en.find((t) => t.id === "s2")?.text).toBe("Translation s2");
+  }, 30000);
+  it("requires alignment review for high-confidence words separated by a VAD timestamp gap, including saved transcripts", async () => {
+    vi.mocked(providers.transcribe).mockResolvedValue({ language: "en", language_probability: 0.99, segments: [{ start: 5.46, end: 35.2, text: "When you call someone.", avg_logprob: -0.02, words: [{ start: 5.46, end: 5.98, word: "When", probability: 0.99, uncertain: false }, { start: 31.14, end: 31.34, word: "you", probability: 0.999, uncertain: false }, { start: 31.34, end: 35.2, word: "call someone.", probability: 0.999, uncertain: false }] }] });
+    const job = await makeJob("wav", await tone(36), { targets: ["en"] }); await runJob(job.id);
+    expect(await readJob(job.id)).toMatchObject({ status: "review", reviewReason: "source", sourceReviewed: false, outputs: {}, segments: [{ start: 5.46, end: 35.2, uncertain: true, qualityReasons: ["discontinuous_word_timestamps"], words: [{ start: 5.46, probability: 0.99 }, { start: 31.14, probability: 0.999 }, { start: 31.34, probability: 0.999 }] }] });
+    expect(providers.translate).not.toHaveBeenCalled(); expect(providers.synthesize).not.toHaveBeenCalled();
+    // An older saved job can already have approved ASR text without this timing
+    // check. Discovering the problem must revoke that obsolete approval once.
+    await updateJob(job.id, (j) => { j.status = "queued"; j.sourceReviewed = true; j.segments[0].uncertain = false; j.segments[0].qualityReasons = []; });
+    vi.mocked(providers.transcribe).mockClear(); await runJob(job.id);
+    expect(await readJob(job.id)).toMatchObject({ status: "review", reviewReason: "source", sourceReviewed: false, segments: [{ uncertain: true, qualityReasons: ["discontinuous_word_timestamps"] }] });
+    expect(providers.transcribe).not.toHaveBeenCalled(); expect(providers.translate).not.toHaveBeenCalled(); expect(providers.synthesize).not.toHaveBeenCalled();
+  }, 30000);
   it("retains faithful text when shortening fails integrity, with bounded speech rate", async () => {
     vi.mocked(providers.translate).mockImplementation(async (segments, _target, _options, _context, _signal, shorten) => {
       if (shorten) throw new providers.TranslationIntegrityError("Missing fact", 502);
@@ -138,6 +202,43 @@ describe("real FFmpeg pipeline with explicitly mocked AI providers", () => {
     const timeline = path.join(root, "long.pcm"); const voice = path.join(root, "voice.wav"); await writeFile(voice, await tone(0.5)); await createTimeline(timeline, 3600); await placeSpeech(timeline, voice, 3599, 1, root, new AbortController().signal);
     expect((await stat(timeline)).size).toBe(3600 * 24000 * 4);
     const f = await open(timeline, "r"); const b = Buffer.alloc(4800); try { await f.read(b, 0, b.length, 3599 * 24000 * 4); expect([...new Float32Array(b.buffer, b.byteOffset, b.length / 4)].some((v) => Math.abs(v) > 0.1)).toBe(true); await f.read(b, 0, b.length, 3598 * 24000 * 4); expect(b.every((v) => v === 0)).toBe(true); } finally { await f.close(); }
+  }, 30000);
+  it("rejects speech that would be cut off or overlap the next segment before writing samples", async () => {
+    const timeline = path.join(root, "cutoff.pcm"); const voice = path.join(root, "voice.wav");
+    await writeFile(voice, await tone(1)); await createTimeline(timeline, 1);
+    await expect(placeSpeech(timeline, voice, 0.5, 1, root, new AbortController().signal)).rejects.toThrow(/avklippning/);
+    expect((await readFile(timeline)).every((v) => v === 0)).toBe(true);
+    await createTimeline(timeline, 3);
+    await expect(placeSpeech(timeline, voice, 0, 1, root, new AbortController().signal, 0.5)).rejects.toThrow(/överlappning/);
+    expect((await readFile(timeline)).every((v) => v === 0)).toBe(true);
+  }, 30000);
+  it("keeps a 6.62-second normalized export and audible speech at the original file end", async () => {
+    const signal = new AbortController().signal; const timeline = path.join(root, "en.pcm"); const voice = path.join(root, "end-voice.wav");
+    await writeFile(voice, await tone(1)); await createTimeline(timeline, 6.62);
+    await placeSpeech(timeline, voice, 5.62, 1, root, signal, 1);
+    await renderTrack(root, "en", 6.62, voice, "replace", undefined, signal);
+    expect((await inspect(path.join(root, "en.wav"), signal)).duration).toBe(6.62);
+    const end = path.join(root, "end.pcm");
+    await ffmpeg(["-i", path.join(root, "en.wav"), "-ss", "6.50", "-t", "0.10", "-ar", "16000", "-ac", "1", "-f", "s16le", end], signal);
+    const bytes = await readFile(end); expect(bytes.length).toBe(3200);
+    expect(Array.from({ length: bytes.length / 2 }, (_, n) => Math.abs(bytes.readInt16LE(n * 2))).some((v) => v > 1000)).toBe(true);
+  }, 30000);
+  it("keeps the sample clock and full duration when high-crest-factor speech needs dynamic loudness normalization", async () => {
+    const signal = new AbortController().signal; const timeline = Buffer.alloc(6.62 * 24000 * 4);
+    for (let n = Math.ceil(0.78 * 24000); n < 6.6 * 24000; n++) {
+      const time = n / 24000;
+      const pulse = time % 1 < 0.02 ? 0.85 : 0;
+      timeline.writeFloatLE((0.02 + pulse) * Math.sin(time * 880 * 2 * Math.PI), n * 4);
+    }
+    await writeFile(path.join(root, "en.pcm"), timeline);
+    await renderTrack(root, "en", 6.62, "unused.wav", "replace", undefined, signal);
+    expect((await inspect(path.join(root, "en.wav"), signal)).duration).toBe(6.62);
+    const decoded = path.join(root, "dynamic-clock.pcm");
+    await ffmpeg(["-i", path.join(root, "en.wav"), "-ar", "24000", "-ac", "1", "-f", "f32le", decoded], signal);
+    const bytes = await readFile(decoded); expect(bytes.length).toBe(timeline.length);
+    const nonzero = Array.from({ length: bytes.length / 4 }, (_, n) => Math.abs(bytes.readFloatLE(n * 4)) > 0.001);
+    expect(nonzero.indexOf(true) / 24000).toBeCloseTo(0.78, 2);
+    expect(nonzero.lastIndexOf(true) / 24000).toBeGreaterThan(6.59);
   }, 30000);
   it("streams Swedish microphone-block transcription, English text and real TTS bytes", async () => {
     vi.mocked(providers.transcribe).mockResolvedValue({ language: "sv", segments: [{ start: 0.1, end: 1, text: "God morgon" }] });

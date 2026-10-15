@@ -23,8 +23,10 @@ npm.cmd start -- --port 3011
 
 ## Modeller och maskin
 
+- Engelska: English (US) är standard i studion. Installerade Piper-röster är `en-us-lessac`, `en-us-ryan`, `en-gb-alba` och `en-gb-alan`, med modellens verkliga US/UK-accent och valbar manlig/kvinnlig röst. Se [aktuella tester och röstlicenser](english-translation-verification.md).
 - ASR: `Systran/faster-whisper-large-v3`, CPU int8. Medium-modellen finns kvar som ett lättare alternativ.
-- Översättning och lokal bildkontext: `gemma3:12b` i Ollama, GPU där Ollama placerar modellen. Anropet använder 8 192 tokens kontext och låg temperatur. Qwen 3.5 9B, TranslateGemma 12B och Whisper large-v2 finns kvar efter jämförelser; de är inte valda som standard.
+- Svensk översättning och lokal bildkontext: `gemma3:12b` i Ollama, GPU där Ollama placerar modellen. Anropet använder 8 192 tokens kontext och låg temperatur. Qwen 3.5 9B och Whisper large-v2 finns kvar som alternativ.
+- Engelska mål använder nu den installerade `translategemma:12b` genom `OLLAMA_ENGLISH_MODEL`. Svenska och andra mål behåller `gemma3:12b`. Bildkontext använder fortfarande Gemma. Utelämnas override-värdet används huvudmodellen för alla mål; en konfigurerad men saknad engelsk modell ger ett tydligt fel.
 - Svensk TTS: Piper `sv_SE-nst-medium`, tränad av KBLab på NST-material. Lisa finns också kvar som alternativ.
 - Arabisk TTS: Piper `ar_JO-kareem-medium`, bland annat för det dokumenterade syntetiska kontrollprovet.
 - Valbar svensk TTS: `facebook/mms-tts-swe`, röst-id `sv-mms-nc`, endast för icke-kommersiell användning enligt modellens CC-BY-NC-4.0. Piper är standardvalet; MMS måste väljas uttryckligen.
@@ -42,8 +44,11 @@ local-ai/.venv/Scripts/python.exe -m pip install --extra-index-url https://downl
 local-ai/.venv/Scripts/python.exe -m pip check
 local-ai/.venv/Scripts/python.exe local-ai/setup_models.py
 ollama pull gemma3:12b
+ollama pull translategemma:12b
 npm.cmd run studio:configure-local
 ```
+
+För samma engelska modellval: lägg `OLLAMA_ENGLISH_MODEL=translategemma:12b` i `.env.local`. Starta om gateway, worker och webbserver efter ändringen. Konfigurationskommandot behåller detta extra värde.
 
 Konfigurationskommandot bevarar befintlig gateway-token och övriga miljövariabler. Det väljer CPU int8, lokal översättning/TTS och lokala modellvägar. Ändringar kräver omstart av de tre processerna.
 
@@ -74,7 +79,7 @@ Hämtning av modeller och öppna talprov använder internet. Själva transkripti
 npm.cmd run test:translation:local
 ```
 
-Standardtestet genererar verkligt neuralt arabiskt tal med en känd referenstext. Alla providers är riktiga. För en egen rättighetsklarerad inspelning:
+Standardtestet genererar neuralt arabiskt tal med en känd referenstext och väljer nu engelska som mål. Alla providers är riktiga. Sätt `STUDIO_TEST_TARGET=sv` för det tidigare svenska provet. För en egen rättighetsklarerad inspelning:
 
 ```powershell
 $env:STUDIO_TEST_MEDIA = "C:/samples/arabic.wav"

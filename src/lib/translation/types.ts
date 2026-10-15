@@ -13,7 +13,9 @@ export const optionsSchema = z.object({
   targets: z.array(language).min(1).max(3).refine((v) => new Set(v).size === v.length),
   style: z.enum(["natural", "literal", "professional", "casual"]).default("natural"),
   mode: z.enum(["replace", "voiceover", "subtitles"]).default("replace"),
-  voice: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).default("coral"),
+  voice: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).default("auto"),
+  englishLocale: z.enum(["en-US", "en-GB"]).default("en-US"),
+  speechRate: z.number().min(0.85).max(1.2).default(1),
   speakerVoices: z.record(z.string().max(80), z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).default({}),
   diarize: z.boolean().default(false), preserveBackground: z.boolean().default(false),
   preserveVoice: z.boolean().default(false), voiceConsent: z.boolean().default(false),
@@ -21,8 +23,8 @@ export const optionsSchema = z.object({
   cloudConsent: z.boolean().default(false),
 }).strict();
 export type StudioOptions = z.infer<typeof optionsSchema>;
-export interface Word { start: number; end: number; word: string }
-export interface Segment { id: string; start: number; end: number; text: string; speaker: string; uncertain?: boolean; words?: Word[]; rawText?: string }
+export interface Word { start: number; end: number; word: string; rawWord?: string; probability?: number; uncertain?: boolean }
+export interface Segment { id: string; start: number; end: number; text: string; speaker: string; uncertain?: boolean; words?: Word[]; rawText?: string; qualityReasons?: string[]; confidence?: number }
 export interface Timing { generated: number; window: number; tempo: number; deviationMs: number; review: boolean; attempts?: number; borrowedSeconds?: number }
 export interface Translation { id: string; text: string; timing?: Timing }
 export type Stage = "uploading" | "transcribing" | "translating" | "generating" | "synchronizing" | "exporting" | "completed";
@@ -32,22 +34,26 @@ export interface Job {
   id: string; name: string; extension: string; createdAt: string; updatedAt: string;
   revision: number; options: StudioOptions; status: JobStatus; stage: Stage;
   command?: "pause" | "cancel"; message: string; error?: string;
-  media?: MediaInfo; detectedLanguage?: string; segments: Segment[];
+  reviewReason?: "source" | "translation" | "timing"; sourceReviewed?: boolean;
+  media?: MediaInfo; detectedLanguage?: string; sourceConfidence?: number; segments: Segment[];
   sourceContext?: { context: string; arabicKeywords: string };
   translations: Record<string, Translation[]>; outputs: Record<string, string[]>;
   warnings: string[]; metrics: { processingMs: number; stages: Record<string, number>; syncMaxDeviationMs?: number; reviewSegments?: number };
 }
 export interface Capabilities {
   ready: boolean; cloud: boolean; asr: string; translation: string; tts: string;
+  subtitleReady?: boolean; subtitleCloud?: boolean;
   languages: string[]; voices: string[]; diarization: boolean; cloning: boolean; separation: boolean;
   voiceLanguages: Record<string, string[]>; cloningLanguages: string[];
+  voiceLocales?: Record<string, string>; voiceGenders?: Record<string, string>;
   message: string; maxUploadMb: number; maxDuration: number; worker: boolean;
 }
-export function timingPlan(generated: number, window: number, maxTempo = 1.2): Timing {
+export function timingPlan(generated: number, window: number, maxTempo = 1.2, preferredTempo = 1): Timing {
   if (!(generated > 0 && window > 0 && Number.isFinite(generated + window))) throw new Error("Ogiltig segmentlängd.");
-  const tempo = Math.max(0.85, Math.min(maxTempo, generated / window));
+  // Keep short phrases at the user's natural pace; accelerate only to fit.
+  const tempo = Math.max(0.85, Math.min(maxTempo, Math.max(preferredTempo, generated / window)));
   const deviationMs = Math.max(0, generated / tempo - window) * 1000;
-  return { generated, window, tempo, deviationMs: Math.round(deviationMs), review: deviationMs > 40 };
+  return { generated, window, tempo, deviationMs: Math.round(deviationMs), review: deviationMs > 1 };
 }
 function stamp(seconds: number, vtt: boolean) {
   const ms = Math.round(Math.max(0, seconds) * 1000);

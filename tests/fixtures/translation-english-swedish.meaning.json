@@ -1,0 +1,6 @@
+{
+  "description": "Critical meaning from Google FLEURS en_us validation row 0; test-only expectations never sent to providers.",
+  "source": { "telephone": "call", "large distance": "thousands of miles", "satellite": "satellite" },
+  "translation": { "telephone": "ringer|ring[at]|samtal", "large distance": "tusentals|tusen", "distance": "kilometer|mil|miles", "satellite": "satellit" },
+  "audio": { "telephone": "ringer|ring[at]|samtal", "large distance": "tusentals|tusen", "distance": "kilometer|mil|miles", "satellite": "satellit" }
+}

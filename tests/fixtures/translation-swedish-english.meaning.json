@@ -1,0 +1,6 @@
+{
+  "description": "Critical meaning from Google FLEURS sv_se validation row 0; test-only expectations never sent to providers.",
+  "source": { "horrors": "skr[aä]ck", "atrocities": "grymhet", "First World War": "f[oö]rsta v[aä]rldskrig", "countries": "l[aä]nder", "avoid recurrence": "undvika.*upprepa", "future": "framtid" },
+  "translation": { "horrors": "horror", "atrocities": "atrocit|cruelt", "First World War": "(?:world war (?:i|1|one)|first world war)", "countries": "countr|nation", "avoid recurrence": "avoid|prevent", "recurrence": "repeat|recurr|again", "future": "future" },
+  "audio": { "horrors": "horror", "atrocities": "atrocit|cruelt", "First World War": "(?:world war (?:i|1|one)|first world war)", "countries": "countr|nation", "avoid recurrence": "avoid|prevent", "recurrence": "repeat|recurr|again", "future": "future" }
+}

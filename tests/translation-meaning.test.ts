@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shorteningPreservesAnchors } from "@/lib/translation/meaning";
+import { shorteningPreservesAnchors, translationPreservesFacts } from "@/lib/translation/meaning";
 
 describe("Swedish shortening anchors", () => {
   it("rejects dropping a written count at the start of a sentence", () => {
@@ -59,5 +59,38 @@ describe("Swedish shortening anchors", () => {
 
   it("reports every missing anchor once", () => {
     expect(shorteningPreservesAnchors("Jerry fick inte tre titlar. Jerry hade 3 mål.", "Han fick titlar.")).toEqual({ ok: false, missing: ["tal:3", "negation", "namn:Jerry"] });
+  });
+});
+
+describe("English translation fact anchors", () => {
+  it("accepts Arabic and Persian digit scripts and equivalent English written quantities", () => {
+    expect(translationPreservesFacts("لم يدفع Jerry ١٢٥ دولارا في ۲۰۲۶", "Jerry did not pay 125 dollars in 2026", "ar", "en").ok).toBe(true);
+    expect(translationPreservesFacts("ثلاثة وعشرون لقبا", "Twenty-three titles", "ar", "en").ok).toBe(true);
+    expect(translationPreservesFacts("١٢٠ دولارا", "One hundred and twenty dollars", "ar", "en").ok).toBe(true);
+  });
+  it("rejects omitted or invented values, changed polarity and Latin names", () => {
+    expect(translationPreservesFacts("Jerry لم يفز بثلاثة ألقاب", "He won two titles", "ar", "en")).toEqual({ ok: false, missing: ["tal:3", "tillagt-tal:2", "negation", "namn:Jerry"] });
+  });
+  it("protects English facts when shortening for timing", () => {
+    expect(shorteningPreservesAnchors("Jerry did not win three titles in 2026.", "Jerry won titles.", "en").missing).toEqual(["tal:2026", "tal:3", "negation"]);
+    expect(shorteningPreservesAnchors("Jerry did not win three titles.", "Jerry didn't win 3 titles.", "en").ok).toBe(true);
+  });
+  it("preserves Swedish negation when auto language detection is used", () => {
+    expect(translationPreservesFacts("Jerry vann inte tre titlar", "Jerry did not win three titles", "auto", "en").ok).toBe(true);
+  });
+  it.each([
+    ["Friday", "fredag", "en", "sv"],
+    ["Today is Monday.", "Idag är det måndag.", "en", "sv"],
+    ["Huset är stort.", "The house is large.", "sv", "en"],
+    ["Solen skiner.", "The sun is shining.", "sv", "en"],
+    ["God morgon. Jerry kommer klockan tre.", "Good morning. Jerry will arrive at three.", "sv", "en"],
+    ["On the other side.", "På andra sidan.", "en", "sv"],
+    ["وصل مئة شخص", "One hundred people arrived.", "ar", "en"],
+    ["1,000 dollars", "1 000 dollar", "en", "sv"],
+    ["وصل مئة وثلاثة وعشرون شخصا", "123 people arrived", "ar", "en"],
+    ["وصل ألف وخمسة أشخاص", "1005 people arrived", "ar", "en"],
+    ["وصل ثلاثة آلاف شخص", "Three thousand people arrived", "ar", "en"],
+  ])("avoids treating ambiguous nouns/ordinals and localized numeric spelling as changed facts: %s", (source, target, sourceLanguage, targetLanguage) => {
+    expect(translationPreservesFacts(source, target, sourceLanguage, targetLanguage)).toEqual({ ok: true, missing: [] });
   });
 });

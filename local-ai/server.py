@@ -9,10 +9,12 @@ import hmac
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import wave
 from pathlib import Path
 
 import httpx
@@ -21,6 +23,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from asr_cleanup import restore_appositive_ordinals
+from asr_quality import mark_uncertainty, repetition_loop
 from speech_text import speech_text
 import mms_voice
 
@@ -45,7 +48,25 @@ async def authorize(request: Request):
 def voices():
     try:
         items = json.loads(os.getenv("STUDIO_PIPER_VOICES_JSON", "[]"))
-        return [v for v in items if isinstance(v, dict) and all(isinstance(v.get(k), str) for k in ["id", "language", "model"]) and Path(v["model"]).is_file() and Path(v["model"] + ".json").is_file()]
+        if not isinstance(items, list):
+            return []
+        available = []
+        for voice in items:
+            if not isinstance(voice, dict) or not all(isinstance(voice.get(k), str) and voice[k] for k in ["id", "language", "model"]):
+                continue
+            model = Path(voice['model'])
+            if not model.is_file() or not Path(str(model) + '.json').is_file():
+                continue
+            try:
+                config = json.loads(Path(str(model) + '.json').read_text(encoding='utf-8'))
+                locale = config.get('language', {}).get('code', '').replace('_', '-')
+                # Derive an accent from the installed model, never an arbitrary label.
+                if not locale or locale.split('-')[0] != voice['language'] or model.stat().st_size == 0:
+                    continue
+                available.append({**voice, 'locale': locale})
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+        return available
     except (ValueError, TypeError):
         return []
 
@@ -57,27 +78,77 @@ def installed(name):
         return False
 
 
+def whisper_weights_available():
+    model_name = os.getenv('WHISPER_MODEL', 'small')
+    model_path = Path(model_name)
+    required = ('model.bin', 'config.json', 'tokenizer.json')
+    if model_path.is_dir():
+        return all(model_path.joinpath(name).is_file() and model_path.joinpath(name).stat().st_size > 0 for name in required)
+    # A package alone is not an installed acoustic model. Check the local HF
+    # cache without downloading anything during a health probe.
+    if ':' in model_name or model_name.startswith(('.', '/', '\\')):
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        # Resolve the aliases supported by the installed faster-whisper build.
+        from faster_whisper.utils import _MODELS
+        repo = _MODELS.get(model_name, model_name)
+        if '/' not in repo:
+            return False
+        return all(isinstance(try_to_load_from_cache(repo, name), str) for name in required)
+    except (ImportError, OSError, ValueError):
+        return False
+
+
+def xtts_available():
+    if os.getenv('STUDIO_XTTS_ENABLED') != 'true' or not installed('TTS'):
+        return False
+    configured = Path(os.getenv('XTTS_MODEL', ''))
+    if configured.is_dir() and all(configured.joinpath(name).is_file() for name in ('config.json', 'model.pth', 'vocab.json')):
+        return True
+    cache = Path(os.getenv('TTS_HOME') or (str(Path(os.getenv('LOCALAPPDATA', '')) / 'tts') if os.name == 'nt' else str(Path(os.getenv('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'tts')))
+    model = cache / 'tts_models--multilingual--multi-dataset--xtts_v2'
+    return all(model.joinpath(name).is_file() for name in ('config.json', 'model.pth', 'vocab.json'))
+
+
+def translation_model(target_language=''):
+    primary = os.getenv('OLLAMA_MODEL', '').strip() or 'qwen2.5:7b'
+    return (os.getenv('OLLAMA_ENGLISH_MODEL', '').strip() or primary) if target_language == 'en' else primary
+
+
 @app.get("/health", dependencies=[Depends(authorize)])
 async def health():
-    available = voices()
-    if mms_voice.available():
+    available = voices() if installed('piper') else []
+    mms = mms_voice.available() and all(installed(name) for name in ('torch', 'transformers', 'scipy'))
+    if mms:
         available.append({'id': 'sv-mms-nc', 'language': 'sv'})
-    cloning = os.getenv("STUDIO_XTTS_ENABLED") == "true" and installed("TTS")
-    services = {"asr": installed("faster_whisper"), "translation": False, "tts": (bool(available) and installed("piper")) or cloning}
+    cloning = xtts_available()
+    services = {"asr": installed("faster_whisper") and whisper_weights_available(), "translation": False, "tts": bool(available) or cloning}
+    translation_models = {'default': translation_model(), 'en': translation_model('en')}
+    model_readiness = {key: False for key in translation_models}
     try:
         async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
             response = await client.get(os.getenv("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/tags")
-            services["translation"] = any(m.get("name") == os.getenv("OLLAMA_MODEL", "qwen2.5:7b") for m in response.json().get("models", []))
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get('models', []) if isinstance(payload, dict) else []
+            if isinstance(models, list):
+                model_readiness = {key: any(isinstance(m, dict) and m.get('name') in (selected, selected + ':latest') for m in models) for key, selected in translation_models.items()}
+            services['translation'] = all(model_readiness.values())
     except (httpx.HTTPError, ValueError):
         pass
+    missing_models = sorted({translation_models[key] for key, ready in model_readiness.items() if not ready})
     return {"ready": all(services.values()), "services": services,
+            'translationModels': translation_models, 'translationModelReady': model_readiness,
             "languages": sorted(set([v["language"] for v in available] + (XTTS_LANGUAGES if cloning else []))),
             "voices": [v["id"] for v in available] + (["xtts"] if cloning else []),
             "voiceLanguages": {**{v["id"]: [v["language"]] for v in available}, **({"xtts": XTTS_LANGUAGES} if cloning else {})},
+            "voiceLocales": {v['id']: v['locale'] for v in available if v.get('locale')},
+            "voiceGenders": {v['id']: v['gender'] for v in available if v.get('gender') in ('male', 'female')},
             "cloningLanguages": XTTS_LANGUAGES if cloning else [],
             "diarization": bool(os.getenv("PYANNOTE_MODEL")) and installed("pyannote.audio"),
             "cloning": cloning, "separation": os.getenv("STUDIO_DEMUCS_ENABLED") == "true" and installed("demucs"),
-            "message": "Lokala moduler kontrollerade; modellvikter laddas vid första jobbet. Kontrollera Piper-modeller och Ollama om en tjänst saknas."}
+            "message": "Lokala paket och modellfiler finns; modellernas körbarhet kontrolleras vid jobbet." if all(services.values()) else "Saknad lokal tjänst/modell: " + ', '.join(k for k, ready in services.items() if not ready) + ". Installera modellfiler och kontrollera Ollama." + (' Förväntade Ollama-modeller: ' + ', '.join(missing_models) + '.' if missing_models else '')}
 
 
 async def upload(file: UploadFile, suffix=".wav"):
@@ -103,6 +174,8 @@ async def upload(file: UploadFile, suffix=".wav"):
 
 def transcribe_sync(file, language, context=""):
     global whisper
+    if not installed('faster_whisper') or not whisper_weights_available():
+        raise HTTPException(503, 'Whisper model files are missing. Install/configure WHISPER_MODEL before transcribing.')
     from faster_whisper import WhisperModel
     if whisper is None:
         device = os.getenv("WHISPER_DEVICE", "cpu")
@@ -123,15 +196,18 @@ def transcribe_sync(file, language, context=""):
     # Retain context and allow Whisper's fallback decoding to escape loops.
     # Visual context helps translation, never dictates acoustic recognition.
     segments, info = whisper.transcribe(str(file), language=language or None, beam_size=5, temperature=(0, 0.2, 0.4, 0.6, 0.8, 1.0),
-                                      condition_on_previous_text=True, vad_filter=True, word_timestamps=True)
-    result = {"language": info.language, "language_probability": info.language_probability, "segments": [{"start": s.start, "end": s.end, "text": s.text,
+                                      condition_on_previous_text=True, vad_filter=True, word_timestamps=True,
+                                      vad_parameters={'min_silence_duration_ms': 500, 'speech_pad_ms': 400},
+                                      language_detection_segments=3)
+    result = {"language": info.language, "language_probability": info.language_probability,
+            "duration": info.duration, "duration_after_vad": info.duration_after_vad,
+            "segments": [{"start": s.start, "end": s.end, "text": s.text,
             "avg_logprob": s.avg_logprob, "no_speech_prob": s.no_speech_prob,
             "temperature": s.temperature, "compression_ratio": s.compression_ratio,
-            "words": [{"start": w.start, "end": w.end, "word": w.word} for w in (s.words or [])]} for s in segments]}
-    from asr_quality import repetition_loop
+            "words": [{"start": w.start, "end": w.end, "word": w.word, "probability": w.probability} for w in (s.words or [])]} for s in segments]}
     if repetition_loop(' '.join(s['text'] for s in result['segments'])):
         raise HTTPException(422, 'Speech recognition repeated the same phrase implausibly. No translation was created; try clearer audio.')
-    return result
+    return mark_uncertainty(result)
 
 
 @app.post("/transcribe", dependencies=[Depends(authorize)])
@@ -139,7 +215,12 @@ async def transcribe(file: UploadFile = File(...), language: str = Form(""), con
     directory, source = await upload(file)
     try:
         async with gate:
-            result = await run_in_threadpool(transcribe_sync, source, language, context)
+            if language == 'auto':
+                language = ''
+            try:
+                result = await run_in_threadpool(transcribe_sync, source, language, context)
+            except (ValueError, RuntimeError) as error:
+                raise HTTPException(422, 'Cannot decode/transcribe this media. Check the file, language and Whisper model.') from error
             if result['language'] == 'ar' and result['segments']:
                 result = restore_appositive_ordinals(result)
                 # Never let a language model rewrite acoustic words, people
@@ -151,14 +232,22 @@ async def transcribe(file: UploadFile = File(...), language: str = Form(""), con
 
 
 async def ollama_json(messages, model=None):
+    selected_model = model or translation_model()
     async with httpx.AsyncClient(timeout=170, follow_redirects=False) as client:
         response = await client.post(os.getenv("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/chat",
-                                     json={"model": model or os.getenv("OLLAMA_MODEL", "qwen2.5:7b"), "messages": messages,
+                                     json={"model": selected_model, "messages": messages,
                                            "stream": False, "format": "json",
-                                           **({"think": False} if os.getenv("OLLAMA_MODEL", "").startswith('qwen3') else {}),
+                                           **({"think": False} if selected_model.startswith('qwen3') else {}),
                                            "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 2048}})
         response.raise_for_status()
-        return json.loads(response.json()["message"]["content"])
+        payload = response.json()
+        message = payload.get('message') if isinstance(payload, dict) else None
+        if not isinstance(message, dict) or not isinstance(message.get('content'), str):
+            raise ValueError('Ollama response is missing JSON message content')
+        result = json.loads(message['content'])
+        if not isinstance(result, dict):
+            raise ValueError('Ollama must return a JSON object')
+        return result
 
 
 @app.post("/describe", dependencies=[Depends(authorize)])
@@ -187,38 +276,69 @@ async def translate(request: Request):
         raise HTTPException(413, "Text too large")
     try:
         data = json.loads(raw)
-        if not isinstance(data.get("messages"), list):
+        if not isinstance(data, dict) or not isinstance(data.get('messages'), list) or not data['messages'] or any(not isinstance(m, dict) or m.get('role') not in ('system', 'user', 'assistant') or not isinstance(m.get('content'), str) for m in data['messages']):
             raise ValueError()
+        target_language = data.get('targetLanguage', '')
+        if not isinstance(target_language, str) or ('targetLanguage' in data and not re.fullmatch(r'[a-z]{2,3}', target_language)):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(422, 'Expected translation messages with role and text content, and optional targetLanguage as a two/three-letter lowercase ISO code')
+    try:
         async with gate:
-            return await ollama_json(data['messages'])
+            return await ollama_json(data['messages'], translation_model(target_language))
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            raise HTTPException(503, 'Configured translation model is unavailable: ' + translation_model(target_language)) from error
+        raise HTTPException(502, 'Ollama did not return a valid translation') from error
     except (ValueError, KeyError, httpx.HTTPError):
         raise HTTPException(502, "Ollama did not return a valid translation")
 
 
-def synthesize_sync(text, language, voice, reference, destination):
+def resolve_voice(language, voice, locale=''):
+    models = voices() if installed('piper') else []
+    requested_locale = locale or ('en-US' if language == 'en' and voice in ('', 'auto') else '')
+    compatible = [v for v in models if v['language'] == language and (not requested_locale or v['locale'].lower() == requested_locale.lower())]
+    if voice in ('', 'auto'):
+        # Stable selection for every segment. Prefer a high-quality model when
+        # available, preserving the configured order for equal quality.
+        compatible.sort(key=lambda v: 'high' not in Path(v['model']).stem)
+        if compatible:
+            return compatible[0]
+    else:
+        selected = next((v for v in compatible if v['id'] == voice), None)
+        if selected:
+            return selected
+    raise HTTPException(422, 'No installed Piper voice matches the requested language/accent. Install a compatible voice or select another one.')
+
+
+def synthesize_sync(text, language, voice, reference, destination, locale=''):
     global xtts
     if voice == 'sv-mms-nc' and not reference:
         if language != 'sv' or not mms_voice.available():
             raise HTTPException(422, 'Swedish noncommercial MMS voice is not configured')
         mms_voice.synthesize(text, destination)
     elif reference:
-        if os.getenv("STUDIO_XTTS_ENABLED") != "true" or language not in XTTS_LANGUAGES:
+        if not xtts_available() or language not in XTTS_LANGUAGES:
             raise HTTPException(422, "XTTS does not support this language or is disabled")
         from TTS.api import TTS
         if xtts is None:
             xtts = TTS(os.getenv("XTTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")).to(os.getenv("XTTS_DEVICE", "cpu"))
         xtts.tts_to_file(text=text, speaker_wav=str(reference), language=language, file_path=str(destination))
     else:
-        model = next((v for v in voices() if v["id"] == voice and v["language"] == language), None)
-        if not model:
-            raise HTTPException(422, "Selected Piper voice does not support this language")
-        subprocess.run([sys.executable, "-m", "piper", "--model", model["model"], "--output_file", str(destination)],
+        model = resolve_voice(language, voice, locale)
+        subprocess.run([sys.executable, "-m", "piper", "--model", model["model"], "--sentence-silence", "0.15", "--output_file", str(destination)],
                        input=speech_text(text, language).encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=170,
                        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+    try:
+        with wave.open(str(destination), 'rb') as output:
+            if output.getnframes() == 0 or output.getframerate() < 8000 or output.getnchannels() not in (1, 2):
+                raise ValueError('empty or unsupported waveform')
+    except (OSError, EOFError, wave.Error, ValueError) as error:
+        raise HTTPException(502, 'The speech model did not produce a valid nonempty WAV file.') from error
 
 
 @app.post("/synthesize", dependencies=[Depends(authorize)])
-async def synthesize(text: str = Form(...), language: str = Form(...), voice: str = Form(...), reference: UploadFile | None = File(None), consent: str = Form("false")):
+async def synthesize(text: str = Form(...), language: str = Form(...), voice: str = Form('auto'), reference: UploadFile | None = File(None), consent: str = Form("false"), locale: str = Form('')):
     if not text.strip() or len(text) > 4000:
         raise HTTPException(422, "Invalid speech text")
     directory = Path(tempfile.mkdtemp(prefix="cd-tts-"))
@@ -231,7 +351,10 @@ async def synthesize(text: str = Form(...), language: str = Form(...), voice: st
             reference_dir, source = await upload(reference)
         destination = directory / "speech.wav"
         async with gate:
-            await run_in_threadpool(synthesize_sync, text, language, voice, source, destination)
+            try:
+                await run_in_threadpool(synthesize_sync, text, language, voice, source, destination, locale)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ImportError, RuntimeError, ValueError) as error:
+                raise HTTPException(502, 'Speech generation failed. Check the selected model and local runtime; no replacement audio was used.') from error
         return FileResponse(destination, media_type="audio/wav", background=BackgroundTask(shutil.rmtree, directory, ignore_errors=True))
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)

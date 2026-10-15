@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { capabilities, providerFetch, synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
+import { capabilities, providerFetch, resolveVoice, synthesize, transcribe, translate, validateOptions } from "@/lib/translation/providers";
 import { optionsSchema } from "@/lib/translation/types";
 import { wavBlob } from "@/lib/translation/client";
 let dir: string;
@@ -60,4 +60,93 @@ it("supports mixed providers using only selected local services", async () => {
   vi.stubEnv("STUDIO_TTS_PROVIDER", "local"); vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ready: false, services: { asr: false, translation: false, tts: true }, languages: ["sv"], voices: ["sv-lisa"], voiceLanguages: { "sv-lisa": ["sv"] }, diarization: false, cloning: false, separation: false, message: "Piper ready" })));
   const caps = await capabilities(); expect(caps.ready).toBe(true); expect(caps.voices).toEqual(["sv-lisa"]);
   await expect(validateOptions({ ...options(), voice: "sv-lisa", targets: ["ar"] })).rejects.toThrow(/målspråk/);
+});
+it("automatically chooses a voice with the requested English locale and validates explicit voices", async () => {
+  vi.stubEnv("STUDIO_TTS_PROVIDER", "local");
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ready: true, languages: ["en", "sv"], voices: ["en-us-ryan", "en-gb-alba", "sv-lisa"], voiceLanguages: { "en-us-ryan": ["en"], "en-gb-alba": ["en"], "sv-lisa": ["sv"] }, voiceLocales: { "en-us-ryan": "en-US", "en-gb-alba": "en-GB", "sv-lisa": "sv-SE" }, diarization: false, cloning: false, separation: false, message: "ready" })));
+  const caps = await capabilities();
+  expect(resolveVoice("en", { ...options(), targets: ["en"] }, caps)).toBe("en-us-ryan");
+  expect(resolveVoice("en", { ...options(), englishLocale: "en-GB" }, caps)).toBe("en-gb-alba");
+  expect(() => resolveVoice("en", { ...options(), voice: "sv-lisa" }, caps)).toThrow(/stöder inte/);
+  expect(() => resolveVoice("en", { ...options(), voice: "en-gb-alba" }, caps)).toThrow(/accent/);
+});
+it.each(["en-US", "en-GB"] as const)("requests natural %s in translation and cloud speech", async (englishLocale) => {
+  const phrase = englishLocale === "en-GB" ? "British English" : "American English";
+  vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.messages) {
+      expect(body.messages[0].content).toContain(phrase);
+      expect(body.messages[0].content).not.toContain("never switch to English");
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: "Hello" }] }) } }] });
+    }
+    expect(body.instructions).toContain(phrase);
+    return new Response(await wavBlob(new Int16Array(160)).arrayBuffer());
+  }));
+  const studioOptions = { ...options(), targets: ["en"], englishLocale };
+  await translate([{ id: "s1", start: 0, end: 2, text: "مرحبا", speaker: "unknown" }], "en", studioOptions, "", new AbortController().signal);
+  await synthesize("Hello", "en", "coral", new AbortController().signal, undefined, studioOptions);
+});
+it("blocks repeated factual omissions after bilingual review and a repair attempt", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: "He won titles" }] }) } }] })));
+  await expect(translate([{ id: "s1", start: 0, end: 4, text: "Jerry لم يفز بثلاثة ألقاب", speaker: "A" }], "en", options(), "", new AbortController().signal)).rejects.toThrow(/س|siffror/);
+});
+it("permits local subtitles without installed TTS or consent for an unused cloud TTS provider", async () => {
+  vi.stubEnv("OPENAI_API_KEY", ""); vi.stubEnv("STUDIO_ASR_PROVIDER", "local"); vi.stubEnv("STUDIO_TRANSLATION_PROVIDER", "local");
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ready: false, services: { asr: true, translation: true, tts: false }, languages: [], voices: [], diarization: false, cloning: false, separation: false, message: "TTS missing" })));
+  const caps = await capabilities(); expect(caps).toMatchObject({ ready: false, subtitleReady: true, subtitleCloud: false });
+  await expect(validateOptions({ ...options(), mode: "subtitles", cloudConsent: false })).resolves.toMatchObject({ subtitleReady: true });
+  await expect(validateOptions({ ...options(), cloudConsent: false })).rejects.toThrow(/saknas/);
+});
+it.each(["Tropical Depression Jerry is the tenth named storm of the season in the Atlantic today.", "Tropical Disturbance Jerry is the tenth named storm of the season in the Atlantic today.", "A tenth named storm formed in the Atlantic today: subtropical storm Jerry.", "It formed in the Atlantic today, the tenth named subtropical storm of the Atlantic hurricane season, subtropical storm Jerry."])("rejects English weather category or season loss after review, including timing rewrites: %s", async (text) => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text }] }) } }] })));
+  await expect(translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية جيري العاشرة من العواصف المسماة في موسم الأطلسي", speaker: "A" }], "en", options(), "", new AbortController().signal, true)).rejects.toThrow(/stormklassificering/);
+});
+it("repairs an English storm category while preserving source-derived ordinal and season", async () => {
+  const good = "Subtropical storm Franklin is the seventh named storm of the Atlantic season today.";
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: "Tropical depression Franklin is seventh." }] }) } }] }))
+    .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: "Tropical disturbance Franklin is seventh." }] }) } }] }))
+    .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: good }] }) } }] }));
+  vi.stubGlobal("fetch", fetch);
+  expect(await translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية فرانكلين السابعة من العواصف المسماة في موسم الأطلسي", speaker: "A" }], "en", options(), "", new AbortController().signal)).toEqual([{ id: "s1", text: good }]);
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+it.each(["en", "sv"])("sends explicit %s target metadata for optional local per-language model routing", async (target) => {
+  vi.stubEnv("STUDIO_TRANSLATION_PROVIDER", "local");
+  const fetch = vi.fn(async (_url, init) => {
+    const body = JSON.parse(init.body);
+    expect(body.targetLanguage).toBe(target);
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[1].role).toBe("user");
+    return Response.json({ segments: [{ id: "s1", text: target === "en" ? "Hello" : "Hej" }] });
+  });
+  vi.stubGlobal("fetch", fetch);
+  expect(await translate([{ id: "s1", start: 0, end: 2, text: "مرحبا", speaker: "A" }], target, options(), "", new AbortController().signal)).toEqual([{ id: "s1", text: target === "en" ? "Hello" : "Hej" }]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it("retains a fact-checked weather draft when the editor introduces a wrong named-subtype scope", async () => {
+  const good = "A subtropical storm named Jerry formed in the Atlantic Ocean today. This is the tenth named storm of the Atlantic hurricane season.";
+  const bad = "It formed in the Atlantic today, the tenth named subtropical storm of the Atlantic hurricane season, subtropical storm Jerry.";
+  const reply = (text: string) => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text }] }) } }] });
+  const fetch = vi.fn().mockResolvedValueOnce(reply(good)).mockResolvedValueOnce(reply(bad)).mockImplementation(async () => reply(bad));
+  vi.stubGlobal("fetch", fetch);
+  expect(await translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية جيري العاشرة من العواصف المسماة في موسم الأطلسي", speaker: "A" }], "en", options(), "", new AbortController().signal)).toEqual([{ id: "s1", text: good }]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it("retains verified drafts by segment even when a repair for another segment corrupts them again", async () => {
+  const good = "Subtropical storm Jerry is the tenth named storm of the Atlantic season today.";
+  const bad = "Jerry is the tenth named subtropical storm of the Atlantic season today.";
+  const reply = (first: string, second: string) => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text: first }, { id: "s2", text: second }] }) } }] });
+  const fetch = vi.fn().mockResolvedValueOnce(reply(good, "Tropical depression Donna."))
+    .mockResolvedValueOnce(reply(bad, "Tropical disturbance Donna."))
+    .mockResolvedValueOnce(reply(bad, "Subtropical storm Donna."));
+  vi.stubGlobal("fetch", fetch);
+  expect(await translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية جيري العاشرة من العواصف المسماة في موسم الأطلسي", speaker: "A" }, { id: "s2", start: 7, end: 9, text: "العاصفة شبه الاستوائية دونا", speaker: "A" }], "en", options(), "", new AbortController().signal)).toEqual([{ id: "s1", text: good }, { id: "s2", text: "Subtropical storm Donna." }]);
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+it("never falls back to a weather draft that passes terminology but changes the source count", async () => {
+  const draft = "Subtropical storm Jerry is the ninth named storm of the Atlantic season today.";
+  const bad = "Jerry is the tenth named subtropical storm of the Atlantic season today.";
+  const reply = (text: string) => Response.json({ choices: [{ message: { content: JSON.stringify({ segments: [{ id: "s1", text }] }) } }] });
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(reply(draft)).mockImplementation(async () => reply(bad)));
+  await expect(translate([{ id: "s1", start: 0, end: 7, text: "اليوم العاصفة شبه الاستوائية جيري العاشرة من العواصف المسماة في موسم الأطلسي", speaker: "A" }], "en", options(), "", new AbortController().signal)).rejects.toThrow(/stormklassificering/);
 });

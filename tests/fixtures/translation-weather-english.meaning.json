@@ -1,0 +1,6 @@
+{
+  "description": "Critical facts from the recorded FLEURS ar_eg test row 0 official reference. Test-only expectations; never provider prompts. The ordinal counts all named storms in the Atlantic season, while subtropical identifies Jerry.",
+  "source": { "ordinal": "عاشر", "subtropical": "شبه\\s+الاستوائي", "season": "موسم", "Jerry": "جيري" },
+  "translation": { "tenth": "tenth|10th", "subtropical storm": "subtropical\\s+storm", "season": "season", "Atlantic": "Atlantic", "today": "today", "Jerry": "Jerry", "named storm": "named\\s+storm" },
+  "audio": { "tenth": "tenth|10th", "subtropical storm": "subtropical\\s+storm", "season": "season", "Atlantic": "Atlantic", "today": "today", "Jerry": "Jerry", "named storm": "named\\s+storm" }
+}
