@@ -1,0 +1,11 @@
+# Optional Swedish MMS voice (facebook/mms-tts-swe, CC-BY-NC-4.0).
+# Install after the base requirements with:
+# python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r local-ai/requirements-mms.txt
+# Exact model-related versions from requirements.windows.lock.txt.
+torch==2.14.1+cpu
+transformers==4.57.6
+numpy==2.5.4
+scipy==1.18.1
+safetensors==0.8.0
+tokenizers==0.22.2
+huggingface_hub==0.36.2

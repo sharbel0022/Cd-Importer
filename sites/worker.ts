@@ -7,6 +7,22 @@ declare const __SITE_HTML__: string;
 interface Env { ASSETS?: { fetch(request: Request): Promise<Response> } }
 const budgets = new Map<string, { count: number; reset: number }>();
 const HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin", "Permissions-Policy": "camera=(), microphone=(self), display-capture=(self), geolocation=()" };
+const TRANSLATION_INFO_HTML = `<!doctype html>
+<html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#141612"><title>AI Translation · lokalt · TON</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#141612;color:#f3f2e9}*{box-sizing:border-box}body{margin:0}main{width:min(720px,100%);margin:auto;padding:48px 24px 64px}a{color:#d3ed82;text-underline-offset:4px}a:focus-visible{outline:2px solid #d3ed82;outline-offset:6px}.brand{display:inline-block;font-weight:850;font-size:30px;letter-spacing:-2px;text-decoration:none;color:#f3f2e9}.brand span{color:#c8df7a}.back{display:block;margin:32px 0 48px;font-size:14px}.eyebrow{color:#c8df7a;font-size:12px;letter-spacing:2px;text-transform:uppercase}h1{font-size:clamp(34px,7vw,52px);line-height:1.1;letter-spacing:-1.5px;margin:16px 0 24px}p{color:#bdc1b3;line-height:1.75;margin:16px 0}.panel{padding:24px;border:1px solid #3b4131;background:#1e2219;border-radius:16px;margin:32px 0}h2{font-size:20px;margin:0 0 12px}.button{display:inline-block;padding:13px 18px;margin:8px 0;background:#c8df7a;color:#18200e;border-radius:8px;font-weight:650;text-decoration:none}.address{overflow-wrap:anywhere;font-size:13px}.links{display:flex;gap:20px;flex-wrap:wrap;font-size:14px}footer{margin-top:48px;color:#878d7a;font-size:13px}
+</style></head><body><main>
+<a class="brand" href="/" aria-label="TON startsida">TON<span>.</span></a><a class="back" href="/">← Till musikbiblioteket</a>
+<div class="eyebrow">AI Translation · lokalt</div><h1>Fler språk.<br>På din dator.</h1>
+<p>AI Translation Studio körs i den lokala versionen av Cd-Importer. Whisper transkriberar talet, Ollama översätter och en lokal TTS-röst läser upp resultatet.</p>
+<p>Den här sidan tar inte emot dina videor eller ljudfiler. Översättning, granskning och export sker i studion som du startar på din egen dator.</p>
+<section class="panel" aria-labelledby="start-heading"><h2 id="start-heading">Starta den lokala servern först</h2>
+<p>Installera modellerna enligt guiden och starta AI-gateway, worker och webbappen på port 3011. Länken nedan fungerar när den lokala servern är igång på den här datorn.</p>
+<a class="button" href="http://127.0.0.1:3011/translation" target="_blank" rel="noopener noreferrer">Öppna lokala studion ↗</a>
+<p class="address">http://127.0.0.1:3011/translation</p></section>
+<nav class="links" aria-label="Installation och källkod"><a href="https://github.com/sharbel0022/Cd-Importer/blob/main/docs/local-ai-setup.md" target="_blank" rel="noopener noreferrer">Installationsguide ↗</a><a href="https://github.com/sharbel0022/Cd-Importer" target="_blank" rel="noopener noreferrer">Källkod på GitHub ↗</a></nav>
+<footer>TON. Dina medier. Din lokala studio.</footer>
+</main></body></html>`;
 function guard(request: Request, action: string) {
   if (request.headers.get("sec-fetch-site") === "cross-site") throw new AppError("Öppna appen för att använda den här funktionen.", 403);
   const minute = Date.now(); const key = `${request.headers.get("cf-connecting-ip") || "local"}:${action}`;
@@ -19,6 +35,13 @@ function guard(request: Request, action: string) {
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url); const action = url.pathname.slice(5);
   if (!url.pathname.startsWith("/api/")) {
+    if (["/translation", "/translation/", "/translation/guide", "/translation/guide/"].includes(url.pathname)) {
+      if (request.method !== "GET" && request.method !== "HEAD") return new Response("Informationssidan tar inte emot uppladdningar.", { status: 405, headers: { Allow: "GET, HEAD" } });
+      return new Response(request.method === "HEAD" ? null : TRANSLATION_INFO_HTML, { headers: {
+        "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      } });
+    }
     if (url.pathname === "/") return new Response(__SITE_HTML__, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response("Sidan finns inte.", { status: 404 });
   }

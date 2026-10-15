@@ -7,8 +7,8 @@
     "node": ">=22.16.0"
   },
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1",
-    "build": "next build",
+    "dev": "next dev --webpack --hostname 127.0.0.1",
+    "build": "next build --webpack",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -21,7 +21,14 @@
     "test:audio-edit": "node --import tsx scripts/audio-edit-check.mjs",
     "build:sites": "node scripts/build-sites.mjs",
     "dev:sites": "wrangler dev --config sites/wrangler.jsonc --port 3003",
-    "test:sites": "node --import tsx scripts/sites-check.mjs"
+    "test:sites": "node --import tsx scripts/sites-check.mjs",
+    "studio:worker": "node --env-file-if-exists=.env.local --import tsx scripts/translation-worker.ts",
+    "studio:gateway": "node --env-file-if-exists=.env.local scripts/translation-gateway.mjs",
+    "studio:configure-local": "node scripts/configure-local-ai.mjs",
+    "test:translation:live": "node --env-file-if-exists=.env.local --import tsx scripts/translation-live-check.ts",
+    "test:translation:local": "node --env-file-if-exists=.env.local --import tsx scripts/translation-local-check.ts",
+    "test:translation:ui": "node --import tsx scripts/translation-ui-check.mjs",
+    "lint": "eslint src/lib/translation src/components/translation-*.tsx src/app/translation src/app/api/translation scripts/translation-worker.ts scripts/translation-live-check.ts scripts/translation-local-check.ts"
   },
   "dependencies": {
     "@ffmpeg/core": "0.12.10",
@@ -37,6 +44,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261008.1",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "^22.19.15",
@@ -44,14 +52,21 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.1.2",
     "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "postcss": "^8.5.8",
     "tailwindcss": "4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vitest": "^4.0.18",
     "wrangler": "^4.148.0"
   },
   "type": "module",
-  "overrides": { "miniflare": { "sharp": "^0.35.5" } }
+  "overrides": {
+    "miniflare": {
+      "sharp": "^0.35.5"
+    }
+  }
 }

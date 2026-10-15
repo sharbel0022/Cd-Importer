@@ -1,0 +1,6 @@
+{
+  "description": "Independent critical facts from the FLEURS Arabic reference; these are test expectations, never provider input.",
+  "source": { "tenth": "عاشر", "subtropical": "شبه\\s+الاستوائي", "season": "موسم", "Jerry": "جيري" },
+  "translation": { "tenth": "tionde|10:e", "subtropical storm": "subtropisk.*storm|storm.*subtropisk", "season": "säsong", "Atlantic": "atlant", "today": "i ?dag", "Jerry": "Jerry", "named storm": "namngiv" },
+  "audio": { "tenth": "tionde|10:e", "subtropical storm": "subtropisk.*storm|storm.*subtropisk", "season": "säsong", "Atlantic": "atlant", "today": "i ?dag", "Jerry": "Jerry", "named storm": "namngiv" }
+}

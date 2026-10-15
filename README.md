@@ -49,7 +49,13 @@ Förhandslyssning hoppar ungefär över markerade delar; den färdiga MP3-filen 
 
 Samma storleks- och tidsgränser som vanlig konvertering gäller. Klipptider valideras på både lokalservern och i Sites-versionen; användaren kan inte skicka godtyckliga FFmpeg-filter eller externa URL:er. Redigering gäller egna eller uttryckligen tillåtna ljudfiler.
 
-## CD Importer Studio
+## AI Translation Studio
+
+Den lokala Next.js-versionen har nu en separat översättningsstudio på `/translation` och i menyn. Den innehåller diskbaserad jobbkö med separat worker, ASR/översättning/TTS-adaptrar, tidsanpassning, redigerbara segment, dubbad mediaexport och blockbaserad Live Translate. Konfigurera OpenAI eller lokala modeller och kör `npm.cmd run studio:worker` i en andra terminal. Inga AI-nycklar eller modeller följer med. Se [installation, verifiering och begränsningar](docs/translation-studio.md) samt [inventering och arkitektur](docs/translation-architecture.md).
+
+På den lokalt verifierade datorn är modeller nu installerade. Se [starta den lokala AI-kedjan](docs/local-ai-setup.md) och [riktigt arabiskt→svenskt talprov med exporter](docs/local-ai-verification.md). Modellvikterna och den privata konfigurationen ingår inte i Git.
+
+## CD Importer Studio (ljud och noter)
 
 Den nya studioprototypen nås via **CD Importer Studio** i sidomenyn eller `/studio/index.html`. Den innehåller lokal ljudredigering, notredigering, projektfiler och undertexter. AI-backend och videorendering återstår. Se [funktioner och begränsningar](docs/studio.md). Kör `node scripts/studio-check.cjs` för studions format- och redigeringskontroller.
 
@@ -159,7 +165,7 @@ Starta om appen efter ändringar i `.env.local`. Statusen i konverteringsvyn vis
 - MP3-data verifieras med riktiga MPEG Layer III-ramar. Att byta filändelse räknas aldrig som konvertering. Icke-MP3 avkodas/kodas med FFmpeg när licensen tillåter.
 - FFmpeg får ingen nätverksåtkomst, tvingas till ljudfilens demuxer och startas med argumentlista utan shell. Storleksgränser gäller den verkliga strömmade uppladdningen.
 - Mutationer från en annan webbplats avvisas. Anropsgränser gäller per serverprocess: 30 sökningar, 120 ljudanrop, 20 hämtningar, 6 ZIP-exporter och 8 konverteringar per minut.
-- Kön sparas bara i den aktuella webbläsaren. Uppladdade originalfiler och serverns temporära konverteringsfiler raderas efter bearbetning. Mikrofonljudet skickas till appens server först när du väljer att spara som MP3.
+- Musikvyns nedladdningskö sparas bara i den aktuella webbläsaren. Filer uppladdade för MP3-konvertering och serverns temporära konverteringsfiler raderas efter bearbetning. Musikvyns mikrofonljud skickas till appens server när du väljer att spara som MP3. AI Translation Studio skickar valt material när du startar översättning/Live och har separat jobblagring med 24 timmars standardretention; se dess installationsguide.
 - Sparade MP3-inspelningar finns i webbläsarens IndexedDB på den aktuella adressen, högst 20 inspelningar och 100 MB totalt. De överlever omladdning men är ingen säkerhetskopia: privat läge, rensad webbplatsdata eller byte av webbläsare/adress kan göra dem otillgängliga. Ladda ner filer du vill behålla. Vid lagringsfel visas en direkt MP3-länk utan att filen påstås vara sparad.
 - Ingen databas eller extern nyckeltjänst behövs. `.env`, beroenden, byggen, ljudfiler och tempmappar ignoreras av Git.
 

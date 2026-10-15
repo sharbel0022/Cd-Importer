@@ -27,7 +27,7 @@ function parseFailures(value: unknown): Failure[] {
   });
 }
 
-export default function MusicApp() {
+export default function MusicApp({ nativeStudio = true }: { nativeStudio?: boolean }) {
   const [view, setCurrentView] = useState<View>("search");
   const [recordingBusy, setRecordingBusy] = useState(false);
   const [recordingSuspendsPlayback, setRecordingSuspendsPlayback] = useState(false);
@@ -274,6 +274,7 @@ export default function MusicApp() {
           <button className={`nav-item ${view === "convert" ? "nav-active" : ""}`} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera & CD</span></button>
           <button className={`nav-item ${view === "record" ? "nav-active" : ""}`} onClick={() => setView("record")} aria-current={view === "record" ? "page" : undefined}><Mic size={20} /><span>Spela in ljud</span></button>
           <button className="nav-item" onClick={() => { if (recordingBusy) { setToast("Avsluta inspelningen eller bearbetningen innan du öppnar studion."); return; } window.location.assign("/studio/index.html"); }}><Sparkles size={20} /><span>CD Importer Studio</span></button>
+          <button className="nav-item" onClick={() => { if (recordingBusy) { setToast("Avsluta inspelningen innan du öppnar översättningsstudion."); return; } window.location.assign("/translation"); }}><AudioLines size={20} /><span>{nativeStudio ? "AI Translation Studio" : "AI Translation · lokalt"}</span></button>
         </nav>
         <div className="sidebar-divider" />
         <div className="sidebar-label">ÖPPNA MUSIKKÄLLOR</div>
@@ -306,6 +307,7 @@ export default function MusicApp() {
         </main>
       </div>
       <nav className="mobile-navigation" aria-label="Mobilmeny">
+        <button onClick={() => { if (recordingBusy) { setToast("Avsluta inspelningen först."); return; } window.location.assign("/translation"); }}><Sparkles size={20} /><span>{nativeStudio ? "AI Studio" : "AI lokalt"}</span></button>
         <button className={view === "search" ? "mobile-nav-active" : ""} onClick={() => setView("search")} aria-current={view === "search" ? "page" : undefined}><Search size={20} /><span>Upptäck</span></button>
         <button className={view === "queue" ? "mobile-nav-active" : ""} onClick={() => setView("queue")} aria-current={view === "queue" ? "page" : undefined}><span className="mobile-queue-icon"><ListMusic size={20} />{queue.length > 0 && <i>{queue.length}</i>}</span><span>Din lista</span></button>
         <button className={view === "convert" ? "mobile-nav-active" : ""} onClick={() => setView("convert")} aria-current={view === "convert" ? "page" : undefined}><FileAudio2 size={20} /><span>Konvertera</span></button>

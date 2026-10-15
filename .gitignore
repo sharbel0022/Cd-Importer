@@ -35,3 +35,8 @@ test-results/
 public/ffmpeg/
 .wrangler/
 .sites-runtime/
+.translation-data/
+local-ai/.venv/
+local-ai/__pycache__/
+local-ai/models/
+local-ai/fixtures/
