@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Play } from "lucide-react";
 import type { StudioOptions } from "@/lib/translation/types";
+import { voiceSampleOptions } from "@/lib/translation/request-options";
 
 const samples: Record<string, string> = { en: "Hello. This is a preview of your translated voice. Names and numbers should remain clear.", sv: "Hej. Det här är ett röstprov för din översättning. Namn och siffror ska höras tydligt.", ar: "مرحبًا. هذه معاينة للصوت المترجم. يجب أن تكون الأسماء والأرقام واضحة." };
 
@@ -15,7 +16,7 @@ export default function TranslationVoicePreview({ options, enabled }: { options:
     setBusy(true); setError(""); setUrl("");
     const abort = new AbortController(); request.current = abort;
     try {
-      const response = await fetch("/api/translation/preview", { method: "POST", signal: abort.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, options: { ...options, targets: [language], diarize: false, preserveBackground: false } }) });
+      const response = await fetch("/api/translation/preview", { method: "POST", signal: abort.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, options: voiceSampleOptions(options) }) });
       if (!response.ok) { const body = await response.json(); throw new Error(body.error || "Röstprovet kunde inte skapas."); }
       setVoice(response.headers.get("X-Studio-Voice") || "");
       setUrl(URL.createObjectURL(await response.blob()));

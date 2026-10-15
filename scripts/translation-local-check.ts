@@ -57,7 +57,7 @@ async function uploadInBrowser(): Promise<Job> {
     if (target === "en") await page.getByRole("combobox", { name: /^Engelsk variant/u }).selectOption(process.env.STUDIO_TEST_ENGLISH_LOCALE || "en-US");
     await page.getByRole("combobox", { name: /^AI-röst/u }).selectOption(voice);
     await page.getByRole("checkbox", { name: "Jag har rätt att översätta och bearbeta detta material." }).check();
-    await page.locator('input[type="file"]').setInputFiles(path.resolve(inputMedia));
+    await page.getByLabel("Välj ljud eller video", { exact: true }).setInputFiles(path.resolve(inputMedia));
     const uploaded = page.waitForResponse((r) => r.url() === `${origin}/api/translation/jobs` && r.request().method() === "POST");
     await page.getByRole("button", { name: "Översätt ljud / Translate Audio", exact: true }).click();
     const response = await uploaded; assert.equal(response.status(), 201);

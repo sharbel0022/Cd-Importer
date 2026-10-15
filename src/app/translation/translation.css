@@ -46,3 +46,8 @@
 .ts-word-confidence button { color: inherit; text-align: inherit; }
 @media (min-width: 651px) { .ts-segment { grid-template-columns: 175px minmax(0,1fr); } }
 @media (max-width: 650px) { .ts-segment-time .ts-button { grid-column: 1/-1; } }
+
+/* Upload precedes language settings in the default workflow, including mobile. */
+.ts-workspace { order: -1; }
+@media(min-width:901px) { .ts-grid { grid-template-columns: minmax(0,1fr) minmax(240px,310px); } }
+@media(min-width:1600px) { .ts-grid { grid-template-columns: minmax(0,1fr) 340px; } }
